@@ -206,6 +206,7 @@ const SEASONAL=[
 
 const GOLD="#C5A24B", GOLD_LOW="#a8843a", GOLD_HI="#e6c878";
 const BRONZE="#9c5e2a", BRAKE="#b53026", ASH="#6b6f78", BONE="#d9d2bf";
+const CHROME="#8a8880";
 const TEAL="#4a9a8a";
 const NEUTRAL_GREEN="#3fcf5a";
 const INK="#050505", CARBON="#0d0d0e", PANEL="#0a0908";
