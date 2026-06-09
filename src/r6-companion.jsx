@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import React from "react";
 import * as THREE from "three";
 
 /* ============================================================
@@ -1055,12 +1056,22 @@ function SettingsTab({state,persist,resetAll,onSwitchRide}){
 /* ── RIDE TAB ── */
 // Elevation fetch for routes
 async function fetchElevation(pts){
-  const res=await fetch("https://api.open-elevation.com/api/v1/lookup",{
-    method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({locations:pts.map(p=>({latitude:p.lat,longitude:p.lon}))}),
-  });
-  const data=await res.json();
-  return data.results.map(r=>m2ft(r.elevation));
+  // Try open-elevation, but with a timeout so it doesn't hang
+  const controller=new AbortController();
+  const timeout=setTimeout(()=>controller.abort(),5000);
+  try{
+    const res=await fetch("https://api.open-elevation.com/api/v1/lookup",{
+      method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({locations:pts.map(p=>({latitude:p.lat,longitude:p.lon}))}),
+      signal:controller.signal,
+    });
+    clearTimeout(timeout);
+    const data=await res.json();
+    return data.results.map(r=>m2ft(r.elevation));
+  }catch{
+    clearTimeout(timeout);
+    throw new Error("elevation fetch failed");
+  }
 }
 function syntheticElevation(routePts){
   return routePts.map((_,i)=>{
@@ -1413,6 +1424,25 @@ function TrackDaySection({settings,persist}){
   );
 }
 
+class RideErrorBoundary extends React.Component{
+  constructor(p){super(p);this.state={err:null};}
+  static getDerivedStateFromError(e){return{err:e?.message||"Unknown error"};}
+  render(){
+    if(this.state.err)return(
+      <div style={{position:"absolute",inset:0,zIndex:20,background:INK,display:"flex",flexDirection:"column",
+        alignItems:"center",justifyContent:"center",padding:32,gap:16}}>
+        <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:BRAKE,letterSpacing:3}}>RIDE TAB ERROR</div>
+        <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#3a3428",letterSpacing:1,textAlign:"center"}}>{this.state.err}</div>
+        <button onClick={()=>this.setState({err:null})}
+          style={{marginTop:8,fontFamily:"'Share Tech Mono',monospace",fontSize:9,letterSpacing:2,
+            padding:"8px 20px",background:"transparent",border:`1px solid ${GOLD}`,color:GOLD,cursor:"pointer"}}>
+          RETRY
+        </button>
+      </div>
+    );
+    return this.props.children;
+  }
+}
 function RideTab({routes,persist,settings}){
   const [activeId,setActiveId]=useState(null);
   // Initialize all Leaflet maps on first render via the RouteCard useEffects
@@ -1433,8 +1463,10 @@ function RideTab({routes,persist,settings}){
           persist(p=>({...p,routes:p.routes.map(rr=>rr.id===r.id?{...rr,elevFt:ft}:rr)}));
         })
         .catch(()=>{
-          const ft=syntheticElevation(pts);
-          setElevCache(prev=>({...prev,[r.id]:ft}));
+          try{
+            const ft=syntheticElevation(pts);
+            setElevCache(prev=>({...prev,[r.id]:ft}));
+          }catch{}
         });
     });
   },[]);
@@ -1758,7 +1790,7 @@ export default function R6Dashboard(){
       {/* Tab panels */}
       {tab==="fix"&&<FixTab miles={miles} logEntries={logEntries} settings={settings}
         onAddLog={addLog} onDelLog={delLog}/>}
-      {tab==="ride"&&<RideTab routes={routes} persist={persist} settings={settings}/>}
+      {tab==="ride"&&<RideErrorBoundary><RideTab routes={routes} persist={persist} settings={settings}/></RideErrorBoundary>}
       {tab==="set"&&<SettingsTab state={store} persist={persist} resetAll={resetAll}
         onSwitchRide={()=>setTab("ride")}/>}
 
