@@ -1105,6 +1105,26 @@ function ElevSilhouette({elevFt,height=60}){
 }
 
 // Leaflet map for route cards
+let _lfPromise=null;
+function loadLeaflet(){
+  if(window.L) return Promise.resolve();
+  if(_lfPromise) return _lfPromise;
+  _lfPromise=new Promise((res,rej)=>{
+    if(!document.getElementById("lf-css")){
+      const l=document.createElement("link");l.id="lf-css";l.rel="stylesheet";
+      l.href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";document.head.appendChild(l);
+    }
+    if(document.getElementById("lf-js")){
+      // script already injected, just wait for it
+      const check=setInterval(()=>{if(window.L){clearInterval(check);res();}},50);
+      return;
+    }
+    const s=document.createElement("script");s.id="lf-js";
+    s.src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+    s.onload=res;s.onerror=rej;document.head.appendChild(s);
+  });
+  return _lfPromise;
+}
 function RouteMap({waypoints,mapId}){
   const ref=useRef(null);
   const [err,setErr]=useState(false);
@@ -1112,9 +1132,10 @@ function RouteMap({waypoints,mapId}){
     const el=ref.current;
     if(!el)return;
     let map=null;
+    let cancelled=false;
     function init(){
       const L=window.L;
-      if(!L||!el||el._lid)return;
+      if(!L||!el||el._lid||cancelled)return;
       el._lid=1;
       map=L.map(el,{zoomControl:false,attributionControl:false,
         scrollWheelZoom:false,dragging:false,touchZoom:false,doubleClickZoom:false});
@@ -1132,16 +1153,8 @@ function RouteMap({waypoints,mapId}){
       const bounds=L.latLngBounds(waypoints.map(w=>[w.lat,w.lon]));
       map.fitBounds(bounds,{padding:[20,20]});
     }
-    if(window.L){init();}
-    else{
-      if(!document.getElementById("lf-css")){
-        const l=document.createElement("link");l.id="lf-css";l.rel="stylesheet";
-        l.href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";document.head.appendChild(l);
-      }
-      const s=document.createElement("script");s.src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
-      s.onload=init;s.onerror=()=>setErr(true);document.head.appendChild(s);
-    }
-    return()=>{if(map){try{map.remove();}catch{}}el&&(el._lid=0);};
+    loadLeaflet().then(()=>{if(!cancelled)init();}).catch(()=>setErr(true));
+    return()=>{cancelled=true;if(map){try{map.remove();}catch{}}el&&(el._lid=0);};
   },[]);
   if(err)return <div style={{height:120,background:"#090807",display:"flex",alignItems:"center",justifyContent:"center"}}>
     <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:7,color:"#2a2520",letterSpacing:2}}>MAP LOADS WITH NETWORK</span>
