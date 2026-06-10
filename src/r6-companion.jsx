@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import React from "react";
 import * as THREE from "three";
+import {AreaChart,Area,XAxis,YAxis,ResponsiveContainer,ReferenceLine} from "recharts";
 
 /* ============================================================
    2008 YZF-R6  —  COMPANION
@@ -8,7 +9,7 @@ import * as THREE from "three";
    ============================================================ */
 
 /* ── PERSISTENCE ──────────────────────────────────────────
-   Everything survives reload via localStorage.            */
+   Everything survives reload via window.storage (async).  */
 const STORAGE_KEY = "r6_companion_v1";
 
 // Route interpolation helpers (used at data-def time and in components)
@@ -22,6 +23,11 @@ function buildRoutePts(wps,steps=20){
 const m2ft=m=>Math.round(m*3.28084);
 const fmtTime=ms=>{const s=Math.floor(ms/1000),h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=s%60;
   return h>0?`${h}h ${String(m).padStart(2,"0")}m ${String(sec).padStart(2,"0")}s`:`${String(m).padStart(2,"0")}m ${String(sec).padStart(2,"0")}s`;};
+// Duration of a ride entry in ms. New entries store ms; legacy entries are parsed from the display string.
+const parseTimeMs=t=>{const m=/^(?:(\d+)h\s*)?(\d+)m\s*(\d+)s$/.exec(t||"");
+  return m?(((+m[1]||0)*3600+(+m[2])*60+(+m[3]))*1000):null;};
+const rideMs=r=>r.ms!=null?r.ms:parseTimeMs(r.time);
+const buzz=(ms=8)=>{try{navigator.vibrate&&navigator.vibrate(ms);}catch{}};
 
 const DEFAULT_ROUTES=[
   { id:"mtn-top-run", name:"Mountain Top Run", region:"Central PA · Renovo Area",
@@ -73,6 +79,8 @@ const DEFAULT_ROUTES=[
 const DEFAULT_STATE = {
   miles: 22000,
   routes: DEFAULT_ROUTES,
+  activeRide: null,    // {routeId,t0} — a running ride survives app close
+  procProgress: {},    // {hotspotId:{stepIdx:true}} — mid-job step checklists
   logEntries: [
     { id:"cool", label:"Cooling System Bleed", tier:"OVERDUE", date:"3/1/2024", mileage:"20000",
       cost:"22", notes:"Engine Ice (propylene glycol) — OFF SPEC. Switch to ethylene glycol at next flush.", ts:1709251200000 },
@@ -90,30 +98,51 @@ const DEFAULT_STATE = {
     trackDayChecklist:{},
   },
 };
-function loadState(){
-  try{
-    const s=localStorage.getItem(STORAGE_KEY);
-    if(s){
-      const parsed=JSON.parse(s);
-      return {
-        ...DEFAULT_STATE,...parsed,
-        routes:parsed.routes||DEFAULT_STATE.routes,
-        settings:{...DEFAULT_STATE.settings,...(parsed.settings||{})},
-      };
-    }
-  }catch{}
-  return DEFAULT_STATE;
+/* localStorage is unavailable in the Claude artifact sandbox — window.storage
+   (async key-value, persists across sessions) replaces it. Saves are debounced
+   to respect rate limits; hydration is guarded so a fast first edit is never
+   clobbered by the async load arriving late. */
+function mergeLoaded(parsed){
+  return {
+    ...DEFAULT_STATE,...parsed,
+    routes:parsed.routes||DEFAULT_STATE.routes,
+    settings:{...DEFAULT_STATE.settings,...(parsed.settings||{})},
+  };
 }
 function useStorage(){
-  const [state,setRaw]=useState(loadState);
+  const [state,setRaw]=useState(DEFAULT_STATE);
+  const [ready,setReady]=useState(false);
+  const dirty=useRef(false);
+  const saveT=useRef(null);
+  useEffect(()=>{
+    let alive=true;
+    (async()=>{
+      let loaded=null;
+      try{
+        if(window.storage){
+          const r=await window.storage.get(STORAGE_KEY);
+          if(r&&r.value)loaded=JSON.parse(r.value);
+        }
+      }catch{/* key missing on first run — expected */}
+      if(alive){
+        if(loaded&&!dirty.current)setRaw(mergeLoaded(loaded));
+        setReady(true);
+      }
+    })();
+    return()=>{alive=false;};
+  },[]);
   const persist=useCallback((updater)=>{
+    dirty.current=true;
     setRaw(prev=>{
       const next=typeof updater==="function"?updater(prev):{...prev,...updater};
-      try{ localStorage.setItem(STORAGE_KEY,JSON.stringify(next)); }catch{}
+      clearTimeout(saveT.current);
+      saveT.current=setTimeout(()=>{
+        try{window.storage&&window.storage.set(STORAGE_KEY,JSON.stringify(next)).catch(()=>{});}catch{}
+      },600);
       return next;
     });
   },[]);
-  return [state,persist];
+  return [state,persist,ready];
 }
 
 /* ── LIVE STATUS ENGINE ─────────────────────────────── */
@@ -129,7 +158,7 @@ function calcTier(hh, miles, logEntries, settings){
   // Tires: tread below 50% on either end → OVERDUE regardless of age
   if(hh.id==="tires"&&settings){
     const ft=settings.tireFrontTread, rt=settings.tireRearTread;
-    if((ft!=null&&Number(ft)<50)||(rt!=null&&Number(rt)<50)) return "OVERDUE";
+    if((ft!=null&&ft!==""&&Number(ft)<50)||(rt!=null&&rt!==""&&Number(rt)<50)) return "OVERDUE";
   }
 
   if(hh.conditionBased){
@@ -137,25 +166,23 @@ function calcTier(hh, miles, logEntries, settings){
     if(lastLog&&lastLog.resolved) return "MONITOR"; // resolved → hide from bike
     return hh.tier;
   }
+  const RANK={OVERDUE:3,DUE_NOW:2,COMING_UP:1,MONITOR:0};
+  let tierMi=null,tierMo=null;
   if(hh.intervalMiles && lastLog && lastLog.mileage){
     const mi=parseInt(lastLog.mileage)||0;
     const until=(mi+hh.intervalMiles)-miles;
-    if(until<=0) return "OVERDUE";
-    if(until<=dueNowWin) return "DUE_NOW";
-    if(until<=comingUpWin) return "COMING_UP";
-    return "MONITOR";
+    tierMi=until<=0?"OVERDUE":until<=dueNowWin?"DUE_NOW":until<=comingUpWin?"COMING_UP":"MONITOR";
   }
   if(hh.intervalMonths && lastLog && lastLog.date){
     const d=new Date(lastLog.date);
     if(!isNaN(d)){
       const next=new Date(d); next.setMonth(next.getMonth()+hh.intervalMonths);
       const days=Math.round((next-new Date())/86400000);
-      if(days<=0) return "OVERDUE";
-      if(days<=30) return "DUE_NOW";
-      if(days<=90) return "COMING_UP";
-      return "MONITOR";
+      tierMo=days<=0?"OVERDUE":days<=30?"DUE_NOW":days<=90?"COMING_UP":"MONITOR";
     }
   }
+  if(tierMi!=null||tierMo!=null)
+    return RANK[tierMi||"MONITOR"]>=RANK[tierMo||"MONITOR"]?(tierMi||tierMo):(tierMo||tierMi);
   return hh.tier; // no log history — use static tier from data
 }
 
@@ -167,11 +194,20 @@ function getMilesUntil(hh, miles, logEntries){
   return (parseInt(lastLog.mileage)+hh.intervalMiles)-miles;
 }
 
+function getDaysUntilService(hh,logEntries){
+  if(!hh.intervalMonths) return null;
+  const itemLogs=logEntries.filter(e=>e.id===hh.id);
+  const lastLog=itemLogs.length>0?itemLogs[itemLogs.length-1]:null;
+  if(!lastLog||!lastLog.date) return null;
+  const d=new Date(lastLog.date); if(isNaN(d)) return null;
+  const next=new Date(d); next.setMonth(next.getMonth()+hh.intervalMonths);
+  return Math.round((next-new Date())/86400000);
+}
 function parseDOT(dot){
   if(!dot||dot.length<4) return null;
   const last4=dot.replace(/\s/g,"").slice(-4);
   const wk=parseInt(last4.slice(0,2)), yr=2000+parseInt(last4.slice(2,4));
-  if(isNaN(wk)||isNaN(yr)||wk<1||wk>52) return null;
+  if(isNaN(wk)||isNaN(yr)||wk<1||wk>53) return null;
   return new Date(yr,0,1+(wk-1)*7);
 }
 function tireAgeYears(dot){
@@ -204,7 +240,7 @@ const SEASONAL=[
      "Full visual: no leaks under bike, all fasteners present","Start engine, reach temp, recheck for leaks"]},
 ];
 
-const GOLD="#C5A24B", GOLD_LOW="#a8843a", GOLD_HI="#e6c878";
+const GOLD="#C5A24B", GOLD_LOW="#bf9747", GOLD_HI="#e6c878";
 const BRONZE="#9c5e2a", BRAKE="#b53026", ASH="#6b6f78", BONE="#d9d2bf";
 const CHROME="#8a8880";
 const TEAL="#4a9a8a";
@@ -470,7 +506,42 @@ function buildGeometry(p,bytes){
   g.setIndex(new THREE.BufferAttribute(idx,1));g.computeVertexNormals();return g;
 }
 
-/* ── sub-components ── */
+/* ── sub-components ──
+   Form inputs are hoisted to module scope on purpose: a component defined
+   inside another component's render gets a new identity every render, so
+   React remounts it — and the input drops focus after every keystroke. */
+const MonoInput=({placeholder,value,onChange,width})=>(
+  <input value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder}
+    style={{background:"#0c0b09",border:"1px solid #252220",color:BONE,
+      fontFamily:"'Share Tech Mono',monospace",fontSize:11,padding:"7px 9px",
+      outline:"none",width:width||"100%"}}/>
+);
+const SettingsField=({label,k,s,upd,type="text",hint,value,onChange})=>{
+  const set=v=>{if(onChange){onChange(v);return;}const n=Number(v);upd(k,type==="number"&&v!==""&&!isNaN(n)?n:v);};
+  return(
+    <div style={{marginBottom:16}}>
+      <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#665c4a",letterSpacing:3,marginBottom:5}}>{label}</div>
+      <input type={type} value={value!==undefined?value:(s[k]??"")} onChange={e=>set(e.target.value)}
+        style={{width:"100%",background:"#090807",border:"1px solid #1e1c18",color:BONE,
+          fontFamily:"'Share Tech Mono',monospace",fontSize:12,padding:"8px 10px",outline:"none",boxSizing:"border-box"}}/>
+      {hint&&<div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#564e40",marginTop:3}}>{hint}</div>}
+    </div>
+  );
+};
+const SecHeader=({title})=>(
+  <div style={{display:"flex",alignItems:"center",gap:8,padding:"18px 0 10px"}}>
+    <div style={{width:2,height:13,background:GOLD}}/>
+    <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:GOLD_LOW,letterSpacing:3}}>{title}</span>
+  </div>
+);
+const BigBtn=({onClick,label,bg,col,border})=>(
+  <button onClick={onClick} style={{width:"100%",height:70,border:border?`2px solid ${bg}`:"none",
+    background:border?"transparent":bg,color:border?bg:col,
+    fontFamily:"'Share Tech Mono',monospace",fontSize:14,letterSpacing:4,cursor:"pointer",
+    marginBottom:8,fontWeight:700}}>
+    {label}
+  </button>
+);
 function DiffPips({diff,color}){
   if(diff===0)return <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9.5,color:"#9a9080",letterSpacing:1}}>SHOP ONLY</span>;
   return(<div style={{display:"flex",gap:3}}>{[1,2,3,4].map(i=><div key={i} style={{width:16,height:5,borderRadius:1,background:i<=diff?color:"#252320"}}/>)}</div>);
@@ -480,7 +551,8 @@ function NodeCard({h,liveTier,onClose,onSwitchFix}){
   const tc=TIER_C[liveTier||h.tier];
   return(
     <div style={{position:"absolute",left:"50%",top:14,transform:"translateX(-50%)",zIndex:20,
-      width:"min(340px,92vw)",background:"#0d0b09",
+      width:"min(340px,92vw)",background:"rgba(13,11,9,0.78)",
+      backdropFilter:"blur(7px)",WebkitBackdropFilter:"blur(7px)",
       border:`1px solid ${tc}55`,borderTop:`2px solid ${tc}`,
       maxHeight:"calc(100vh - 90px)",overflowY:"auto",
       boxShadow:`0 12px 48px rgba(0,0,0,0.8),0 0 0 1px ${tc}18`}}>
@@ -490,18 +562,18 @@ function NodeCard({h,liveTier,onClose,onSwitchFix}){
           <div style={{fontFamily:"'Saira Condensed',sans-serif",fontWeight:800,fontSize:20,color:BONE,letterSpacing:.5,lineHeight:1}}>{h.label}</div>
           <div style={{display:"flex",alignItems:"center",gap:8,marginTop:4}}>
             <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9.5,color:tc,letterSpacing:2}}>{(liveTier||h.tier).replace("_"," ")}</span>
-            {h.diy!=null&&<span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8.5,color:"#5a5040",letterSpacing:1}}>
+            {h.diy!=null&&<span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8.5,color:"#86795f",letterSpacing:1}}>
               {h.diy===0?"FREE DIY":`~$${h.diy} DIY · $${h.garage} SHOP`}
             </span>}
           </div>
         </div>
-        <button onClick={onClose} style={{fontFamily:"'Share Tech Mono',monospace",fontSize:10,color:"#9a9080",
+        <button onClick={onClose} aria-label="Close" style={{fontFamily:"'Share Tech Mono',monospace",fontSize:10,color:"#9a9080",
           background:"transparent",border:"1px solid #2a2a2a",padding:"4px 9px",cursor:"pointer",flexShrink:0}}>✕</button>
       </div>
       {/* diff pips */}
       <div style={{padding:"8px 16px 6px",borderBottom:"1px solid #171512",display:"flex",alignItems:"center",gap:10}}>
         <DiffPips diff={h.diff} color={tc}/>
-        <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:"#5a5040",letterSpacing:1}}>{h.diffLabel}</span>
+        <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:"#86795f",letterSpacing:1}}>{h.diffLabel}</span>
       </div>
       {/* summary */}
       <div style={{padding:"10px 16px",borderBottom:"1px solid #171512"}}>
@@ -515,7 +587,7 @@ function NodeCard({h,liveTier,onClose,onSwitchFix}){
           {PROC[h.id].specs.map((s,i)=>(
             <div key={i} style={{display:"flex",alignItems:"flex-start",marginBottom:3}}>
               <span style={{color:GOLD,marginRight:8,fontSize:10}}>▸</span>
-              <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:10.5,color:GOLD,lineHeight:1.5}}>{s}</span>
+              <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:11,color:GOLD_HI,lineHeight:1.5}}>{s}</span>
             </div>
           ))}
         </div>
@@ -531,7 +603,57 @@ function NodeCard({h,liveTier,onClose,onSwitchFix}){
     </div>
   );
 }
-function Dock({active,onChange,overdueCt,miles}){
+// Tach arc — SVG sweep, redline zone in gold
+const Tach=({deg,col})=>{
+  const cx=150,cy=120,r=104, a0=215, a1=-35; // sweep angles (deg)
+  const ticks=[];
+  for(let i=0;i<=9;i++){
+    const t=i/9, ang=(a0+(a1-a0)*t)*Math.PI/180;
+    const x1=cx+Math.cos(ang)*r, y1=cy-Math.sin(ang)*r;
+    const x2=cx+Math.cos(ang)*(r-12), y2=cy-Math.sin(ang)*(r-12);
+    const hot=i===8; // only the 8th tick is redline entry; 9 is end-stop
+    ticks.push(<line key={i} x1={x1} y1={y1} x2={x2} y2={y2}
+      stroke={hot?GOLD_HI:"#4a4438"} strokeWidth={hot?2.5:1.8}/>);
+  }
+  // arc path
+  const pa=(deg)=>{const a=deg*Math.PI/180;return [cx+Math.cos(a)*r, cy-Math.sin(a)*r];};
+  const [sx,sy]=pa(a0),[ex,ey]=pa(a1);
+  const [rx,ry]=pa(a0+(a1-a0)*(8/9));
+  const [redEnd,]=pa(a0+(a1-a0)*(8.5/9)); // redline arc ends before tick 9
+  return(
+    <svg viewBox="0 0 300 132" style={{width:"100%",height:"100%",display:"block"}}>
+      <path d={`M ${sx} ${sy} A ${r} ${r} 0 0 1 ${ex} ${ey}`} fill="none" stroke="#2a2520" strokeWidth="2"/>
+      <path d={`M ${rx} ${ry} A ${r} ${r} 0 0 1 ${redEnd} ${pa(a0+(a1-a0)*(8.5/9))[1]}`} fill="none" stroke={GOLD_HI} strokeWidth="2.5" opacity="0.55"/>
+      {ticks}
+      <g style={{transformBox:"view-box",transformOrigin:"150px 120px",
+        transform:`rotate(${deg}deg)`,transition:"transform 1.1s cubic-bezier(.4,0,.2,1)"}}>
+        <line x1={cx} y1={cy} x2={cx} y2={cy-(r-18)} stroke={col} strokeWidth="2.5"
+          strokeLinecap="round" opacity="0.85" style={{filter:`drop-shadow(0 0 3px ${col}88)`}}/>
+      </g>
+      <circle cx={cx} cy={cy} r="5.5" fill="#14110c" stroke="#2a2520" strokeWidth="1"/>
+    </svg>
+  );
+};
+function Dock({active,onChange,overdueCt,miles,readiness}){
+  /* Needle does the classic key-on sweep, then parks at READINESS:
+     resting at idle = healthy, buried toward redline = the bike needs work.
+     The decorative needle now carries the app's single most useful number. */
+  const IDLE_DEG=-94,MAX_DEG=58;
+  const rd=readiness??100;
+  const targetDeg=IDLE_DEG+(1-rd/100)*(MAX_DEG-IDLE_DEG);
+  const tRef=useRef(targetDeg);tRef.current=targetDeg;
+  const swept=useRef(false);
+  const [needle,setNeedle]=useState(IDLE_DEG);
+  useEffect(()=>{
+    const reduce=window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if(reduce){swept.current=true;setNeedle(tRef.current);return;}
+    const t1=setTimeout(()=>setNeedle(MAX_DEG),300);
+    const t2=setTimeout(()=>{swept.current=true;setNeedle(tRef.current);},1500);
+    return()=>{clearTimeout(t1);clearTimeout(t2);};
+  },[]);
+  useEffect(()=>{if(swept.current)setNeedle(targetDeg);},[targetDeg]);
+  const rdc=rd>=90?TEAL:rd>=70?GOLD:rd>=45?BRONZE:BRAKE;
+  const rdLabel=rd>=90?"DIALED":rd>=70?"RIDEABLE · MINOR ITEMS":rd>=45?"RIDEABLE · SERVICE DUE":"SERVICE NEEDED";
   const tabs=[
     {id:"home", label:"HOME"},
     {id:"fix",  label:"FIX"},
@@ -578,31 +700,6 @@ function Dock({active,onChange,overdueCt,miles}){
     </div>
   );
 
-  // Tach arc — SVG sweep, redline zone in gold
-  const Tach=()=>{
-    const cx=150,cy=120,r=104, a0=215, a1=-35; // sweep angles (deg)
-    const ticks=[];
-    for(let i=0;i<=9;i++){
-      const t=i/9, ang=(a0+(a1-a0)*t)*Math.PI/180;
-      const x1=cx+Math.cos(ang)*r, y1=cy-Math.sin(ang)*r;
-      const x2=cx+Math.cos(ang)*(r-12), y2=cy-Math.sin(ang)*(r-12);
-      const hot=i===8; // only the 8th tick is redline entry; 9 is end-stop
-      ticks.push(<line key={i} x1={x1} y1={y1} x2={x2} y2={y2}
-        stroke={hot?GOLD_HI:"#4a4438"} strokeWidth={hot?2.5:1.8}/>);
-    }
-    // arc path
-    const pa=(deg)=>{const a=deg*Math.PI/180;return [cx+Math.cos(a)*r, cy-Math.sin(a)*r];};
-    const [sx,sy]=pa(a0),[ex,ey]=pa(a1);
-    const [rx,ry]=pa(a0+(a1-a0)*(8/9));
-    const [redEnd,]=pa(a0+(a1-a0)*(8.5/9)); // redline arc ends before tick 9
-    return(
-      <svg viewBox="0 0 300 132" style={{width:"100%",height:"100%",display:"block"}}>
-        <path d={`M ${sx} ${sy} A ${r} ${r} 0 0 1 ${ex} ${ey}`} fill="none" stroke="#2a2520" strokeWidth="2"/>
-        <path d={`M ${rx} ${ry} A ${r} ${r} 0 0 1 ${redEnd} ${pa(a0+(a1-a0)*(8.5/9))[1]}`} fill="none" stroke={GOLD_HI} strokeWidth="2.5" opacity="0.55"/>
-        {ticks}
-      </svg>
-    );
-  };
 
   // Cluster indicator-light button
   const Btn=({t})=>{
@@ -613,7 +710,7 @@ function Dock({active,onChange,overdueCt,miles}){
     const litGreen=isHome;
     const showCol=litGreen?NEUTRAL_GREEN:(on?col:"#15120e");
     return(
-      <button onClick={()=>onChange(t.id)} style={{flex:1,display:"flex",flexDirection:"column",
+      <button onClick={()=>{buzz(6);onChange(t.id);}} style={{flex:1,display:"flex",flexDirection:"column",
         alignItems:"center",justifyContent:"center",gap:5,background:"transparent",border:"none",
         cursor:"pointer",position:"relative",padding:"6px 0"}}>
         <span style={{
@@ -640,22 +737,26 @@ function Dock({active,onChange,overdueCt,miles}){
       <div style={{position:"relative",height:136,overflow:"visible"}}>
         {/* tach arc backdrop */}
         <div style={{position:"absolute",left:"50%",bottom:-20,transform:"translateX(-50%)",
-          width:380,height:186,opacity:0.9,pointerEvents:"none"}}><Tach/></div>
+          width:380,height:186,opacity:0.9,pointerEvents:"none"}}><Tach deg={needle} col={rdc}/></div>
 
         {/* odometer centered in the arc */}
         <div style={{position:"absolute",left:0,right:0,bottom:22,display:"flex",
           flexDirection:"column",alignItems:"center",gap:3,pointerEvents:"none"}}>
-          <Lcd/>
+          <div onClick={()=>onChange("set")} role="button" aria-label="Update mileage"
+            title="Tap to update mileage" style={{pointerEvents:"auto",cursor:"pointer"}}><Lcd/></div>
           <div style={{display:"flex",alignItems:"center",gap:6}}>
             <span style={{width:5,height:5,borderRadius:"50%",background:overdueCt>0?BRAKE:TEAL,
               boxShadow:`0 0 6px ${overdueCt>0?BRAKE:TEAL}`}}/>
             <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:GOLD_LOW,letterSpacing:3}}>ODO · MI</span>
           </div>
+          <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8.5,letterSpacing:1.5,color:rdc,opacity:0.95}}>
+            {rd}% · {rdLabel}
+          </span>
         </div>
 
         {/* model label, mimics tach face */}
         <div style={{position:"absolute",top:34,left:"50%",transform:"translateX(-50%)",
-          fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:"#5a5345",letterSpacing:4,pointerEvents:"none"}}>
+          fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:"#766c58",letterSpacing:4,pointerEvents:"none"}}>
           R6
         </div>
       </div>
@@ -669,7 +770,7 @@ function Dock({active,onChange,overdueCt,miles}){
   );
 }
 /* ── MILEAGE BAR ── */
-function FixTab({miles,logEntries,settings,onAddLog,onDelLog}){
+function FixTab({miles,logEntries,settings,onAddLog,onDelLog,focusId,onFocusDone,procProgress,onToggleStep}){
   const [filter,setFilter]=useState("ALL");
   const [expanded,setExpanded]=useState(null);
   const [logOpen,setLogOpen]=useState(null);   // id of item with log form open
@@ -678,8 +779,21 @@ function FixTab({miles,logEntries,settings,onAddLog,onDelLog}){
   const items=ALL_HOTSPOTS.map(h=>({...h,
     liveTier:calcTier(h,miles,logEntries,settings),
     milesUntil:getMilesUntil(h,miles,logEntries),
+    daysUntilSvc:getDaysUntilService(h,logEntries),
   }));
-  const filters=["ALL","OVERDUE","DUE_NOW","COMING_UP","MONITOR"];
+  const totalCost=logEntries.reduce((sum,e)=>sum+(parseFloat(e.cost)||0),0);
+  const filters=["ALL","OVERDUE","DUE_NOW","COMING_UP","MONITOR","TRACK_PREP"];
+
+  // Arriving from a node card on the bike: expand that item and scroll to it.
+  useEffect(()=>{
+    if(!focusId)return;
+    setFilter("ALL");setExpanded(focusId);
+    requestAnimationFrame(()=>{
+      const el=document.getElementById("fix-"+focusId);
+      el&&el.scrollIntoView({block:"start",behavior:"smooth"});
+    });
+    onFocusDone&&onFocusDone();
+  },[focusId]);
   const filtered=filter==="ALL"?items:items.filter(i=>i.liveTier===filter);
   const grouped=TIER_ORD.map(t=>({tier:t,items:filtered.filter(i=>i.liveTier===t)})).filter(g=>g.items.length>0);
 
@@ -697,20 +811,18 @@ function FixTab({miles,logEntries,settings,onAddLog,onDelLog}){
     setLogOpen(null);setExpanded(null);
   };
 
-  const Input=({placeholder,value,onChange,width})=>(
-    <input value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder}
-      style={{background:"#0c0b09",border:"1px solid #252220",color:BONE,
-        fontFamily:"'Share Tech Mono',monospace",fontSize:11,padding:"7px 9px",
-        outline:"none",width:width||"100%"}}/>
-  );
 
   return(
-    <div style={{position:"absolute",inset:0,zIndex:20,background:INK,display:"flex",flexDirection:"column"}}>
+    <div style={{position:"absolute",inset:0,zIndex:20,background:INK,display:"flex",flexDirection:"column",animation:"panelIn .25s ease"}}>
       {/* Header + filter pills */}
       <div style={{padding:"12px 16px 10px",borderBottom:"1px solid #181614",
         background:"linear-gradient(180deg,#0d0b09,#080604)",flexShrink:0}}>
-        <div style={{fontFamily:"'Saira Condensed',sans-serif",fontWeight:800,fontSize:18,
-          color:BONE,letterSpacing:3,marginBottom:10}}>FIX</div>
+        <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",marginBottom:10}}>
+          <div style={{fontFamily:"'Saira Condensed',sans-serif",fontWeight:800,fontSize:18,
+            color:BONE,letterSpacing:3}}>FIX</div>
+          {totalCost>0&&<div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,
+            color:GOLD_LOW,letterSpacing:1}}>${totalCost.toFixed(0)} LOGGED</div>}
+        </div>
         <div style={{display:"flex",gap:5,overflowX:"auto",paddingBottom:2,
           scrollbarWidth:"none",msOverflowStyle:"none"}}>
           {filters.map(t=>{
@@ -732,25 +844,31 @@ function FixTab({miles,logEntries,settings,onAddLog,onDelLog}){
               <div style={{width:2,height:13,background:tc,flexShrink:0}}/>
               <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:tc,letterSpacing:3}}>{TIER_LBL[g.tier]||g.tier}</span>
               <div style={{flex:1,height:1,background:`linear-gradient(90deg,${tc}44,transparent)`}}/>
-              <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#2a2520"}}>{g.items.length}</span>
+              <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#564e40"}}>{g.items.length}</span>
             </div>
             {g.items.map(item=>{
               const open=expanded===item.id;
               const lastLogs=logEntries.filter(e=>e.id===item.id);
-              const last=lastLogs[lastLogs.length-1];
               const isLogging=logOpen===item.id;
               const isCondition=item.conditionBased;
-              return <div key={item.id} style={{marginBottom:2}}>
+              return <div key={item.id} id={"fix-"+item.id} style={{marginBottom:2}}>
                 {/* Item header row */}
                 <div onClick={()=>setExpanded(open?null:item.id)} style={{display:"flex",alignItems:"center",gap:10,
                   padding:"11px 16px",borderLeft:`3px solid ${tc}`,background:"#090807",cursor:"pointer"}}>
                   <div style={{flex:1,minWidth:0}}>
                     <div style={{fontFamily:"'Saira Condensed',sans-serif",fontWeight:700,fontSize:16,color:BONE}}>{item.label}</div>
-                    <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#3a3428",marginTop:2}}>
+                    <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#665c4a",marginTop:2}}>
                       {(()=>{
-                        if(item.milesUntil!=null) return item.milesUntil<=0
-                          ?`${Math.abs(item.milesUntil).toLocaleString()} MI OVERDUE`
-                          :`${item.milesUntil.toLocaleString()} MI TO GO`;
+                        const mu=item.milesUntil,du=item.daysUntilSvc;
+                        // show whichever axis is more urgent (time can expire before miles)
+                        if(du!=null&&du<=0&&(mu==null||mu>0))
+                          return `${Math.abs(du)} DAYS OVERDUE`;
+                        if(mu!=null) return mu<=0
+                          ?`${Math.abs(mu).toLocaleString()} MI OVERDUE`
+                          :`${mu.toLocaleString()} MI TO GO`;
+                        if(du!=null) return du<=0
+                          ?`${Math.abs(du)} DAYS OVERDUE`
+                          :`${du} DAYS TO GO`;
                         if(item.conditionBased) return "CONDITION BASED";
                         if(item.intervalMiles) return `EVERY ${item.intervalMiles.toLocaleString()} MI`;
                         if(item.intervalMonths) return `EVERY ${item.intervalMonths} MONTHS`;
@@ -781,37 +899,56 @@ function FixTab({miles,logEntries,settings,onAddLog,onDelLog}){
                       {PROC[item.id].specs.map((s,i)=>(
                         <div key={i} style={{display:"flex",alignItems:"flex-start",marginBottom:3}}>
                           <span style={{color:GOLD,marginRight:8,fontSize:9}}>▸</span>
-                          <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:10,color:GOLD,lineHeight:1.5}}>{s}</span>
+                          <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:10.5,color:GOLD_HI,lineHeight:1.5}}>{s}</span>
                         </div>
                       ))}
                     </div>
                   )}
 
-                  {/* Procedure toggle */}
-                  {PROC[item.id]&&<details style={{borderBottom:"1px solid #111"}}>
-                    <summary style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#5a5040",
-                      letterSpacing:2,padding:"9px 16px",cursor:"pointer",listStyle:"none",
-                      display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                      <span>PROCEDURE ▾</span>
-                      <span style={{color:"#2a2520"}}>TAP TO EXPAND</span>
-                    </summary>
-                    <div style={{padding:"10px 16px 14px"}}>
-                      {PROC[item.id].steps.map((step,i)=>(
-                        <div key={i} style={{display:"flex",alignItems:"flex-start",marginBottom:7}}>
-                          <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:tc,
-                            marginRight:10,flexShrink:0,marginTop:2}}>{String(i+1).padStart(2,"0")}</span>
-                          <span style={{fontFamily:"'Saira Semi Condensed',sans-serif",fontSize:13,color:"#a89c80",lineHeight:1.55}}>{step}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </details>}
+                  {/* Procedure — tappable steps, progress persists mid-job
+                      and clears automatically when the work is logged */}
+                  {PROC[item.id]&&(()=>{
+                    const prog=(procProgress&&procProgress[item.id])||{};
+                    const steps=PROC[item.id].steps;
+                    const doneCt=steps.reduce((n,_,i)=>n+(prog[i]?1:0),0);
+                    return(
+                    <details style={{borderBottom:"1px solid #111"}}>
+                      <summary style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#86795f",
+                        letterSpacing:2,padding:"9px 16px",cursor:"pointer",listStyle:"none",
+                        display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                        <span>PROCEDURE ▾</span>
+                        <span style={{color:doneCt>0?tc:"#2a2520"}}>
+                          {doneCt>0?`${doneCt}/${steps.length} DONE`:"TAP TO EXPAND"}
+                        </span>
+                      </summary>
+                      <div style={{padding:"10px 16px 14px"}}>
+                        {steps.map((step,i)=>{
+                          const done=!!prog[i];
+                          return(
+                          <div key={i} onClick={()=>{buzz(6);onToggleStep(item.id,i);}}
+                            style={{display:"flex",alignItems:"flex-start",marginBottom:7,cursor:"pointer"}}>
+                            <div style={{width:15,height:15,border:`1.5px solid ${done?tc:"#3a3428"}`,
+                              background:done?tc+"22":"transparent",flexShrink:0,marginRight:9,marginTop:1,
+                              display:"flex",alignItems:"center",justifyContent:"center"}}>
+                              {done&&<svg width="8" height="6" viewBox="0 0 9 7"><polyline points="1,3.5 3.5,6 8,1" fill="none" stroke={tc} strokeWidth="1.5" strokeLinecap="round"/></svg>}
+                            </div>
+                            <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:done?"#3a3428":tc,
+                              marginRight:8,flexShrink:0,marginTop:2}}>{String(i+1).padStart(2,"0")}</span>
+                            <span style={{fontFamily:"'Saira Semi Condensed',sans-serif",fontSize:13,
+                              color:done?"#4a4438":"#a89c80",lineHeight:1.55,
+                              textDecoration:done?"line-through":"none"}}>{step}</span>
+                          </div>);
+                        })}
+                      </div>
+                    </details>);
+                  })()}
 
                   {/* Parts */}
                   <div style={{padding:"10px 16px",borderBottom:"1px solid #111"}}>
-                    <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#3a3428",letterSpacing:3,marginBottom:6}}>PARTS</div>
+                    <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#665c4a",letterSpacing:3,marginBottom:6}}>PARTS</div>
                     {item.parts.map((p,i)=>(
                       <div key={i} style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:8,marginBottom:5}}>
-                        <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9.5,color:"#7a7060",flex:1}}>
+                        <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9.5,color:"#92866f",flex:1}}>
                           <span style={{color:tc,marginRight:6}}>◆</span>{p.name}{p.oem?` — ${p.oem}`:""}
                         </span>
                         {p.partzilla&&<a href={p.partzilla} target="_blank" rel="noreferrer"
@@ -822,19 +959,24 @@ function FixTab({miles,logEntries,settings,onAddLog,onDelLog}){
                     ))}
                   </div>
 
-                  {/* Last logged */}
-                  {last&&<div style={{padding:"8px 16px",borderBottom:"1px solid #111",background:"#060504"}}>
-                    <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:7,color:"#2a2520",letterSpacing:2,marginBottom:4}}>LAST LOGGED</div>
-                    <div style={{display:"flex",gap:12,flexWrap:"wrap",alignItems:"center"}}>
-                      <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:"#5a5040"}}>{last.date}</span>
-                      {last.mileage&&<span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:"#5a5040"}}>{Number(last.mileage).toLocaleString()} mi</span>}
-                      {last.cost&&<span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:GOLD_LOW}}>${last.cost}</span>}
-                      {last.resolved&&<span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:7,color:GOLD,border:`1px solid ${GOLD}44`,padding:"1px 5px"}}>RESOLVED</span>}
-                      <button onClick={()=>onDelLog(last.ts)} style={{fontFamily:"'Share Tech Mono',monospace",
-                        fontSize:7,color:"#3a3428",background:"transparent",border:"1px solid #1a1814",
-                        padding:"1px 6px",cursor:"pointer",marginLeft:"auto"}}>DELETE</button>
+                  {/* Service history — every log for this item, newest first */}
+                  {lastLogs.length>0&&<div style={{padding:"8px 16px",borderBottom:"1px solid #111",background:"#060504"}}>
+                    <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#564e40",letterSpacing:2,marginBottom:4}}>
+                      SERVICE HISTORY · {lastLogs.length}
                     </div>
-                    {last.notes&&<div style={{fontFamily:"'Saira Semi Condensed',sans-serif",fontSize:12,color:"#3a3428",marginTop:3}}>{last.notes}</div>}
+                    {lastLogs.slice().reverse().map(lg=>(
+                      <div key={lg.ts} style={{display:"flex",gap:12,flexWrap:"wrap",alignItems:"center",
+                        padding:"4px 0",borderTop:"1px solid #0c0a08"}}>
+                        <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:"#86795f"}}>{lg.date}</span>
+                        {lg.mileage&&<span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:"#86795f"}}>{Number(lg.mileage).toLocaleString()} mi</span>}
+                        {lg.cost&&<span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:GOLD_LOW}}>${lg.cost}</span>}
+                        {lg.resolved&&<span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:GOLD,border:`1px solid ${GOLD}44`,padding:"1px 5px"}}>RESOLVED</span>}
+                        <button onClick={()=>onDelLog(lg.ts)} aria-label="Delete entry" style={{fontFamily:"'Share Tech Mono',monospace",
+                          fontSize:8,color:"#665c4a",background:"transparent",border:"1px solid #1a1814",
+                          padding:"1px 6px",cursor:"pointer",marginLeft:"auto"}}>DELETE</button>
+                        {lg.notes&&<div style={{width:"100%",fontFamily:"'Saira Semi Condensed',sans-serif",fontSize:12,color:"#665c4a",marginTop:-2}}>{lg.notes}</div>}
+                      </div>
+                    ))}
                   </div>}
 
                   {/* Inline log form */}
@@ -843,16 +985,16 @@ function FixTab({miles,logEntries,settings,onAddLog,onDelLog}){
                       <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:tc,letterSpacing:2,marginBottom:8}}>LOG COMPLETED WORK</div>
                       <div style={{display:"flex",gap:8,marginBottom:8}}>
                         {!isCondition&&<div style={{flex:"0 0 90px"}}>
-                          <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:7,color:"#4a4438",marginBottom:4}}>MILEAGE *</div>
-                          <Input value={logForm.mileage} onChange={v=>setLogForm(f=>({...f,mileage:v}))} placeholder="22000" width="90px"/>
+                          <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#766a54",marginBottom:4}}>MILEAGE *</div>
+                          <MonoInput value={logForm.mileage} onChange={v=>setLogForm(f=>({...f,mileage:v}))} placeholder="22000" width="90px"/>
                         </div>}
                         <div style={{flex:"0 0 70px"}}>
-                          <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:7,color:"#4a4438",marginBottom:4}}>COST ($)</div>
-                          <Input value={logForm.cost} onChange={v=>setLogForm(f=>({...f,cost:v}))} placeholder="35" width="70px"/>
+                          <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#766a54",marginBottom:4}}>COST ($)</div>
+                          <MonoInput value={logForm.cost} onChange={v=>setLogForm(f=>({...f,cost:v}))} placeholder="35" width="70px"/>
                         </div>
                         <div style={{flex:1}}>
-                          <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:7,color:"#4a4438",marginBottom:4}}>NOTES</div>
-                          <Input value={logForm.notes} onChange={v=>setLogForm(f=>({...f,notes:v}))} placeholder="Brand, details…"/>
+                          <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#766a54",marginBottom:4}}>NOTES</div>
+                          <MonoInput value={logForm.notes} onChange={v=>setLogForm(f=>({...f,notes:v}))} placeholder="Brand, details…"/>
                         </div>
                       </div>
                       {isCondition&&<div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
@@ -863,14 +1005,14 @@ function FixTab({miles,logEntries,settings,onAddLog,onDelLog}){
                           {logForm.resolved&&<svg width="9" height="7" viewBox="0 0 9 7"><polyline points="1,3.5 3.5,6 8,1" fill="none" stroke={GOLD} strokeWidth="1.5" strokeLinecap="round"/></svg>}
                         </div>
                         <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:logForm.resolved?GOLD:"#5a5040",letterSpacing:1}}>
-                          MARK RESOLVED — removes node from bike
+                          MARK RESOLVED — node turns grey (monitored)
                         </span>
                       </div>}
                       <div style={{display:"flex",gap:8}}>
                         <button onClick={()=>submitLog(item)} style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,
                           color:INK,background:GOLD,border:"none",padding:"8px 14px",cursor:"pointer",letterSpacing:2}}>SAVE</button>
                         <button onClick={()=>setLogOpen(null)} style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,
-                          color:"#5a5040",background:"transparent",border:"1px solid #252220",padding:"8px 14px",cursor:"pointer",letterSpacing:2}}>CANCEL</button>
+                          color:"#86795f",background:"transparent",border:"1px solid #252220",padding:"8px 14px",cursor:"pointer",letterSpacing:2}}>CANCEL</button>
                       </div>
                     </div>
                     :<div style={{padding:"10px 16px 14px"}}>
@@ -899,7 +1041,7 @@ function FixTab({miles,logEntries,settings,onAddLog,onDelLog}){
               padding:"11px 16px",borderLeft:`3px solid ${TEAL}`,background:"#080c0b",cursor:"pointer"}}>
               <div style={{flex:1}}>
                 <span style={{fontFamily:"'Saira Condensed',sans-serif",fontWeight:700,fontSize:16,color:BONE}}>{s.title}</span>
-                {active&&<span style={{marginLeft:10,fontFamily:"'Share Tech Mono',monospace",fontSize:7,
+                {active&&<span style={{marginLeft:10,fontFamily:"'Share Tech Mono',monospace",fontSize:8,
                   border:`1px solid ${TEAL}44`,color:TEAL,padding:"1px 6px"}}>ACTIVE</span>}
               </div>
               <svg width="11" height="11" viewBox="0 0 11 11" style={{transform:open?"rotate(180deg)":"none",transition:"transform .15s"}}>
@@ -909,7 +1051,7 @@ function FixTab({miles,logEntries,settings,onAddLog,onDelLog}){
             {open&&<div style={{background:"#060909",borderLeft:`3px solid ${TEAL}`,borderTop:"1px solid #101a18",padding:"12px 16px 14px",marginBottom:2}}>
               {s.steps.map((st,i)=><div key={i} style={{display:"flex",alignItems:"flex-start",gap:8,marginBottom:8}}>
                 <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:TEAL,flexShrink:0,marginTop:2}}>{String(i+1).padStart(2,"0")}</span>
-                <span style={{fontFamily:"'Saira Semi Condensed',sans-serif",fontSize:13,color:"#7a7868",lineHeight:1.55}}>{st}</span>
+                <span style={{fontFamily:"'Saira Semi Condensed',sans-serif",fontSize:13,color:"#94927e",lineHeight:1.55}}>{st}</span>
               </div>)}
             </div>}
           </div>;
@@ -927,7 +1069,7 @@ function MileageField({current,onCommit}){
   const commit=()=>{ const n=parseInt(draft,10); if(!isNaN(n)){ onCommit(n); } setEditing(false); };
   return(
     <div style={{marginBottom:16}}>
-      <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#3a3428",letterSpacing:3,marginBottom:5}}>CURRENT MILEAGE</div>
+      <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#665c4a",letterSpacing:3,marginBottom:5}}>CURRENT MILEAGE</div>
       <div style={{display:"flex",gap:8}}>
         <input type="number" inputMode="numeric" value={draft}
           onFocus={()=>setEditing(true)}
@@ -942,7 +1084,7 @@ function MileageField({current,onCommit}){
             border:`1px solid ${dirty?GOLD:"#2a2520"}`,
             boxShadow:dirty?`0 0 8px ${GOLD}66`:"none",transition:"all .15s"}}>SET</button>
       </div>
-      <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#2a2520",marginTop:3}}>Type the full number, then tap SET (or Enter)</div>
+      <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#564e40",marginTop:3}}>Type the full number, then tap SET (or Enter)</div>
     </div>
   );
 }
@@ -950,84 +1092,113 @@ function SettingsTab({state,persist,resetAll,onSwitchRide}){
   const s=state.settings||{};
   const upd=(k,v)=>persist(p=>({...p,settings:{...p.settings,[k]:v}}));
   const [confirmReset,setConfirmReset]=useState(false);
-  const Field=({label,k,type="text",hint,value,onChange})=>(
-    <div style={{marginBottom:16}}>
-      <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#3a3428",letterSpacing:3,marginBottom:5}}>{label}</div>
-      <input type={type} value={value!==undefined?value:(s[k]||"")} onChange={e=>onChange?onChange(e.target.value):upd(k,e.target.value)}
-        style={{width:"100%",background:"#090807",border:"1px solid #1e1c18",color:BONE,
-          fontFamily:"'Share Tech Mono',monospace",fontSize:12,padding:"8px 10px",outline:"none",boxSizing:"border-box"}}/>
-      {hint&&<div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#2a2520",marginTop:3}}>{hint}</div>}
-    </div>
-  );
-  const Sec=({title})=>(
-    <div style={{display:"flex",alignItems:"center",gap:8,padding:"18px 0 10px"}}>
-      <div style={{width:2,height:13,background:GOLD}}/>
-      <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:GOLD_LOW,letterSpacing:3}}>{title}</span>
-    </div>
-  );
+  const [backupText,setBackupText]=useState("");
+  const [backupMsg,setBackupMsg]=useState(null); // {text, err}
+  const doExport=()=>{
+    const json=JSON.stringify(state);
+    setBackupText(json);
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      navigator.clipboard.writeText(json)
+        .then(()=>setBackupMsg({text:"COPIED TO CLIPBOARD — SAVE IT SOMEWHERE SAFE",err:false}))
+        .catch(()=>setBackupMsg({text:"SELECT THE TEXT BELOW AND COPY IT",err:false}));
+    }else setBackupMsg({text:"SELECT THE TEXT BELOW AND COPY IT",err:false});
+  };
+  const doImport=()=>{
+    try{
+      const parsed=JSON.parse(backupText);
+      if(!parsed||typeof parsed!=="object"||(!Array.isArray(parsed.logEntries)&&!parsed.settings))
+        throw new Error("shape");
+      persist(()=>mergeLoaded(parsed));
+      setBackupMsg({text:`IMPORTED — ${(parsed.logEntries||[]).length} SERVICE ENTRIES RESTORED`,err:false});
+      setBackupText("");
+    }catch{
+      setBackupMsg({text:"NOT A VALID BACKUP — PASTE THE FULL EXPORTED TEXT",err:true});
+    }
+  };
   const regDays=daysUntil(s.registration),insDays=daysUntil(s.inspection);
 
   return(
-    <div style={{position:"absolute",inset:0,zIndex:20,background:INK,overflowY:"auto",paddingBottom:80}}>
+    <div style={{position:"absolute",inset:0,zIndex:20,background:INK,overflowY:"auto",paddingBottom:80,animation:"panelIn .25s ease"}}>
       <div style={{padding:"14px 16px 10px",borderBottom:"1px solid #181614",background:"linear-gradient(180deg,#0d0b09,#080604)"}}>
         <div style={{fontFamily:"'Saira Condensed',sans-serif",fontWeight:800,fontSize:18,color:BONE,letterSpacing:3}}>SETTINGS</div>
       </div>
       <div style={{padding:"0 18px"}}>
-        <Sec title="ODOMETER"/>
+        <SecHeader title="ODOMETER"/>
         <MileageField current={state.miles} onCommit={(n)=>persist(p=>({...p,miles:n}))}/>
-        <Field label="PURCHASE ODOMETER (MI)" k="purchaseOdometer" type="number"/>
-        <Field label="PURCHASE DATE" k="purchaseDate" type="date"/>
+        <SettingsField s={s} upd={upd} label="PURCHASE ODOMETER (MI)" k="purchaseOdometer" type="number"/>
+        <SettingsField s={s} upd={upd} label="PURCHASE DATE" k="purchaseDate" type="date"/>
 
-        <Sec title="REGISTRATION & INSPECTION"/>
+        <SecHeader title="REGISTRATION & INSPECTION"/>
         {regDays!=null&&<div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,
           color:regDays<=30?BRAKE:regDays<=90?BRONZE:ASH,marginBottom:8}}>
           {regDays<=0?"REGISTRATION EXPIRED":regDays<=30?`EXPIRES IN ${regDays} DAYS`:`${regDays} DAYS REMAINING`}
         </div>}
-        <Field label="REGISTRATION EXPIRY" k="registration" type="date"/>
+        <SettingsField s={s} upd={upd} label="REGISTRATION EXPIRY" k="registration" type="date"/>
         {insDays!=null&&<div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,
           color:insDays<=30?BRAKE:insDays<=90?BRONZE:ASH,marginBottom:8}}>
           {insDays<=0?"INSPECTION EXPIRED":insDays<=30?`EXPIRES IN ${insDays} DAYS`:`${insDays} DAYS REMAINING`}
         </div>}
-        <Field label="INSPECTION EXPIRY" k="inspection" type="date"/>
+        <SettingsField s={s} upd={upd} label="INSPECTION EXPIRY" k="inspection" type="date"/>
 
-        <Sec title="TIRES"/>
+        <SecHeader title="TIRES"/>
         <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:tireTierColor(s.tireFrontDOT),marginBottom:6}}>
           FRONT: DOT {s.tireFrontDOT||"?"} · {tireAgeLabel(s.tireFrontDOT)}
-          {s.tireFrontTread!=null&&<span style={{color:Number(s.tireFrontTread)<50?BRAKE:GOLD_LOW}}> · {s.tireFrontTread}% TREAD</span>}
+          {s.tireFrontTread!=null&&s.tireFrontTread!==""&&<span style={{color:Number(s.tireFrontTread)<50?BRAKE:GOLD_LOW}}> · {s.tireFrontTread}% TREAD</span>}
         </div>
-        <Field label="FRONT DOT (LAST 4)" k="tireFrontDOT" hint="e.g. 3021 = week 30 of 2021"/>
-        <Field label="FRONT INSTALL MILEAGE" k="tireFrontInstallMi" type="number"/>
-        <Field label="FRONT TREAD (%)" k="tireFrontTread" type="number" hint="Below 50% = OVERDUE on home dashboard"/>
+        <SettingsField s={s} upd={upd} label="FRONT DOT (LAST 4)" k="tireFrontDOT" hint="e.g. 3021 = week 30 of 2021"/>
+        <SettingsField s={s} upd={upd} label="FRONT INSTALL MILEAGE" k="tireFrontInstallMi" type="number"/>
+        <SettingsField s={s} upd={upd} label="FRONT TREAD (%)" k="tireFrontTread" type="number" hint="Below 50% = OVERDUE on home dashboard"/>
         <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:tireTierColor(s.tireRearDOT),marginBottom:6}}>
           REAR: DOT {s.tireRearDOT||"?"} · {tireAgeLabel(s.tireRearDOT)}
-          {s.tireRearTread!=null&&<span style={{color:Number(s.tireRearTread)<50?BRAKE:GOLD_LOW}}> · {s.tireRearTread}% TREAD</span>}
+          {s.tireRearTread!=null&&s.tireRearTread!==""&&<span style={{color:Number(s.tireRearTread)<50?BRAKE:GOLD_LOW}}> · {s.tireRearTread}% TREAD</span>}
         </div>
-        <Field label="REAR DOT (LAST 4)" k="tireRearDOT"/>
-        <Field label="REAR INSTALL MILEAGE" k="tireRearInstallMi" type="number"/>
-        <Field label="REAR TREAD (%)" k="tireRearTread" type="number" hint="Below 50% = OVERDUE on home dashboard"/>
+        <SettingsField s={s} upd={upd} label="REAR DOT (LAST 4)" k="tireRearDOT"/>
+        <SettingsField s={s} upd={upd} label="REAR INSTALL MILEAGE" k="tireRearInstallMi" type="number"/>
+        <SettingsField s={s} upd={upd} label="REAR TREAD (%)" k="tireRearTread" type="number" hint="Below 50% = OVERDUE on home dashboard"/>
 
-        <Sec title="ALERT WINDOWS"/>
-        <Field label="DUE NOW WINDOW (MI)" k="dueNowWindow" type="number" hint="Items within this many miles show DUE NOW"/>
-        <Field label="COMING UP WINDOW (MI)" k="comingUpWindow" type="number"/>
+        <SecHeader title="ALERT WINDOWS"/>
+        <SettingsField s={s} upd={upd} label="DUE NOW WINDOW (MI)" k="dueNowWindow" type="number" hint="Items within this many miles show DUE NOW"/>
+        <SettingsField s={s} upd={upd} label="COMING UP WINDOW (MI)" k="comingUpWindow" type="number"/>
 
-        <Sec title="TRACK DAY"/>
+        <SecHeader title="TRACK DAY"/>
         <div style={{padding:"10px 14px",border:`1px solid #1e1c18`,marginBottom:16,background:"#08070600"}}>
           {s.nextTrackDay
             ?<>
               <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:GOLD_HI,marginBottom:6}}>
                 ⬡ SCHEDULED — {new Date(s.nextTrackDay+"T00:00:00").toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})}
               </div>
-              <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#3a3428",lineHeight:1.6,marginBottom:10}}>
+              <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#665c4a",lineHeight:1.6,marginBottom:10}}>
                 Track prep nodes are live on HOME. Manage checklist in RIDE tab.
               </div>
             </>
-            :<div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#3a3428",lineHeight:1.6,marginBottom:10}}>
+            :<div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#665c4a",lineHeight:1.6,marginBottom:10}}>
               Schedule a track day in the RIDE tab — prep nodes will appear on the bike.
             </div>}
           <button onClick={onSwitchRide} style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,
             color:GOLD_LOW,background:"transparent",border:`1px solid ${GOLD_LOW}44`,
             padding:"6px 12px",cursor:"pointer",letterSpacing:2}}>OPEN RIDE TAB →</button>
         </div>
+
+        <SecHeader title="BACKUP"/>
+        <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#665c4a",lineHeight:1.7,marginBottom:8}}>
+          Data lives on this device only. Export a copy before clearing browser data or moving to a new phone.
+        </div>
+        <div style={{display:"flex",gap:8,marginBottom:8}}>
+          <button onClick={doExport} style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:GOLD_LOW,
+            background:"transparent",border:`1px solid ${GOLD_LOW}44`,padding:"8px 14px",cursor:"pointer",letterSpacing:2}}>EXPORT</button>
+          <button onClick={doImport} disabled={!backupText} style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,
+            color:backupText?TEAL:"#2a2520",background:"transparent",
+            border:`1px solid ${backupText?TEAL+"44":"#1a1814"}`,padding:"8px 14px",
+            cursor:backupText?"pointer":"default",letterSpacing:2}}>IMPORT</button>
+        </div>
+        {backupMsg&&<div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,
+          color:backupMsg.err?BRAKE:TEAL,letterSpacing:1,marginBottom:8}}>{backupMsg.text}</div>}
+        <textarea value={backupText} onChange={e=>setBackupText(e.target.value)}
+          placeholder="Exported data appears here — or paste a saved backup and tap IMPORT"
+          spellCheck={false}
+          style={{width:"100%",height:84,background:"#090807",border:"1px solid #1e1c18",color:"#86795f",
+            fontFamily:"'Share Tech Mono',monospace",fontSize:9,padding:"8px 10px",outline:"none",
+            boxSizing:"border-box",resize:"vertical",marginBottom:4}}/>
 
         <div style={{height:1,background:`linear-gradient(90deg,transparent,${BRAKE}33,transparent)`,margin:"20px 0 16px"}}/>
         {!confirmReset
@@ -1047,7 +1218,7 @@ function SettingsTab({state,persist,resetAll,onSwitchRide}){
           </div>}
 
         <div style={{height:1,background:`linear-gradient(90deg,transparent,${GOLD}22,transparent)`,margin:"24px 0 10px"}}/>
-        <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:7,color:"#1e1c18",letterSpacing:1,textAlign:"center"}}>
+        <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#464034",letterSpacing:1,textAlign:"center"}}>
           Based on Yamaha Service Manual LIT-11616-21-61
         </div>
       </div>
@@ -1169,7 +1340,7 @@ function RouteMap({waypoints,mapId}){
     return()=>{cancelled=true;if(map){try{map.remove();}catch{}}el&&(el._lid=0);};
   },[]);
   if(err)return <div style={{height:120,background:"#090807",display:"flex",alignItems:"center",justifyContent:"center"}}>
-    <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:7,color:"#2a2520",letterSpacing:2}}>MAP LOADS WITH NETWORK</span>
+    <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#564e40",letterSpacing:2}}>MAP LOADS WITH NETWORK</span>
   </div>;
   return(
     <div style={{position:"relative",height:120}}>
@@ -1189,8 +1360,6 @@ function ElevProfile({elevFt,miles}){
   const mn=Math.min(...elevFt),mx=Math.max(...elevFt);
   const sumIdx=elevFt.indexOf(mx);
   const sumDist=+((sumIdx/(elevFt.length-1))*miles).toFixed(1);
-  const {AreaChart,Area,XAxis,YAxis,ResponsiveContainer,ReferenceLine,Tooltip}=window.Recharts||{};
-  if(!window.Recharts)return null;
   return(
     <div style={{padding:"12px 16px 10px",background:"#060504",borderTop:"1px solid #141210"}}>
       <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
@@ -1205,7 +1374,7 @@ function ElevProfile({elevFt,miles}){
               <stop offset="100%" stopColor={GOLD} stopOpacity={0.04}/>
             </linearGradient>
           </defs>
-          <XAxis dataKey="dist" tick={{fontSize:7,fill:"#3a3428",fontFamily:"'Share Tech Mono',monospace"}}
+          <XAxis dataKey="dist" tick={{fontSize:8,fill:"#3a3428",fontFamily:"'Share Tech Mono',monospace"}}
             tickLine={false} axisLine={{stroke:"#1a1612"}} tickFormatter={v=>`${v}mi`}
             interval={Math.floor(data.length/5)}/>
           <YAxis hide domain={[mn-100,mx+200]}/>
@@ -1219,87 +1388,91 @@ function ElevProfile({elevFt,miles}){
 }
 
 // Timer component
-function RideTimer({onLog}){
-  const [phase,setPhase]=useState("idle");
-  const [t0,setT0]=useState(null);
+function RideTimer({running,startedAt,otherRide,onStart,onStop,onLog}){
+  const [phase,setPhase]=useState("idle");      // idle | confirm | stopped
   const [elapsed,setElapsed]=useState(0);
+  const [finalMs,setFinalMs]=useState(0);
   const [notes,setNotes]=useState("");
   const tick=useRef(null);
   useEffect(()=>{
-    if(phase==="running"){tick.current=setInterval(()=>setElapsed(Date.now()-t0),500);}
-    else clearInterval(tick.current);
+    if(running){
+      const upd=()=>setElapsed(Date.now()-startedAt);
+      upd();tick.current=setInterval(upd,500);
+    }else clearInterval(tick.current);
     return()=>clearInterval(tick.current);
-  },[phase,t0]);
-  const BigBtn=({onClick,label,bg,col,border})=>(
-    <button onClick={onClick} style={{width:"100%",height:70,border:border?`2px solid ${bg}`:"none",
-      background:border?"transparent":bg,color:border?bg:col,
-      fontFamily:"'Share Tech Mono',monospace",fontSize:14,letterSpacing:4,cursor:"pointer",
-      marginBottom:8,fontWeight:700}}>
-      {label}
-    </button>
-  );
-  if(phase==="idle")return <BigBtn onClick={()=>setPhase("confirm")} label="▶  START RIDE" bg={GOLD} col={INK}/>;
-  if(phase==="confirm")return(
-    <div>
-      <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:GOLD,
-        letterSpacing:2,textAlign:"center",padding:"12px 0 10px"}}>READY TO ROLL?</div>
-      <BigBtn onClick={()=>{setT0(Date.now());setElapsed(0);setPhase("running");}} label="GO" bg={GOLD} col={INK}/>
-      <BigBtn onClick={()=>setPhase("idle")} label="CANCEL" bg={CHROME} col={CHROME} border/>
-    </div>
-  );
-  if(phase==="running")return(
+  },[running,startedAt]);
+  // keep the screen awake while timing — silently unsupported in some browsers
+  useEffect(()=>{
+    if(!running)return;
+    let lock=null;
+    try{navigator.wakeLock&&navigator.wakeLock.request("screen").then(l=>{lock=l;}).catch(()=>{});}catch{}
+    return()=>{try{lock&&lock.release();}catch{}};
+  },[running]);
+  if(running)return(
     <div>
       <div style={{textAlign:"center",padding:"16px 0 14px"}}>
         <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:GOLD_LOW,letterSpacing:3,marginBottom:6}}>RIDE IN PROGRESS</div>
         <div style={{fontFamily:"'Saira Condensed',sans-serif",fontWeight:800,fontSize:52,color:BONE,letterSpacing:1,lineHeight:1}}>{fmtTime(elapsed)}</div>
         <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:6,marginTop:10}}>
           <div style={{width:7,height:7,borderRadius:"50%",background:"#3a8a40",boxShadow:"0 0 8px #3a8a40",animation:"pulse 1.2s infinite"}}/>
-          <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:7,color:"#2a5a30",letterSpacing:1}}>LIVE</span>
+          <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#2a5a30",letterSpacing:1}}>LIVE · SURVIVES APP CLOSE</span>
         </div>
       </div>
-      <BigBtn onClick={()=>setPhase("stopped")} label="■  STOP" bg={BRAKE} col="#fff"/>
+      <BigBtn onClick={()=>{buzz(20);setFinalMs(Date.now()-startedAt);onStop();setPhase("stopped");}} label="■  STOP" bg={BRAKE} col="#fff"/>
     </div>
   );
   if(phase==="stopped")return(
     <div>
       <div style={{textAlign:"center",padding:"16px 0 14px"}}>
         <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:CHROME,letterSpacing:3,marginBottom:6}}>FINISHED</div>
-        <div style={{fontFamily:"'Saira Condensed',sans-serif",fontWeight:800,fontSize:52,color:GOLD,letterSpacing:1}}>{fmtTime(elapsed)}</div>
+        <div style={{fontFamily:"'Saira Condensed',sans-serif",fontWeight:800,fontSize:52,color:GOLD,letterSpacing:1}}>{fmtTime(finalMs)}</div>
       </div>
       <div style={{marginBottom:12}}>
-        <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#3a3428",letterSpacing:2,marginBottom:6}}>NOTES (OPTIONAL)</div>
+        <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#665c4a",letterSpacing:2,marginBottom:6}}>NOTES (OPTIONAL)</div>
         <input value={notes} onChange={e=>setNotes(e.target.value)} placeholder="Conditions, highlights…"
           style={{width:"100%",background:"#0a0907",border:`1px solid #1e1c18`,color:BONE,
           fontFamily:"'Share Tech Mono',monospace",fontSize:11,padding:"9px 10px",outline:"none"}}/>
       </div>
-      <BigBtn onClick={()=>{onLog(elapsed,notes);setPhase("idle");setElapsed(0);setNotes("");}} label="LOG RIDE" bg={GOLD} col={INK}/>
-      <BigBtn onClick={()=>{setPhase("idle");setElapsed(0);setNotes("");}} label="DISCARD" bg={CHROME} col={CHROME} border/>
+      <BigBtn onClick={()=>{onLog(finalMs,notes);setPhase("idle");setNotes("");}} label="LOG RIDE" bg={GOLD} col={INK}/>
+      <BigBtn onClick={()=>{setPhase("idle");setNotes("");}} label="DISCARD" bg={CHROME} col={CHROME} border/>
     </div>
   );
-  return null;
+  if(phase==="confirm")return(
+    <div>
+      <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:GOLD,
+        letterSpacing:2,textAlign:"center",padding:"12px 0 10px"}}>READY TO ROLL?</div>
+      <BigBtn onClick={()=>{buzz(15);onStart();}} label="GO" bg={GOLD} col={INK}/>
+      <BigBtn onClick={()=>setPhase("idle")} label="CANCEL" bg={CHROME} col={CHROME} border/>
+    </div>
+  );
+  if(otherRide)return(
+    <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#665c4a",
+      letterSpacing:1,textAlign:"center",padding:"16px 0"}}>RIDE TIMER RUNNING ON ANOTHER ROUTE</div>
+  );
+  return <BigBtn onClick={()=>setPhase("confirm")} label="▶  START RIDE" bg={GOLD} col={INK}/>;
 }
 
 // Single route card
-function RouteCard({route,elevFt,onLog,isActive,onActivate,onDeactivate}){
+function RouteCard({route,elevFt,elevIsEst,onLog,isActive,onActivate,onDeactivate,activeRide,onStartRide,onClearRide}){
   const best=route.rideLog.length>0
-    ?route.rideLog.slice().sort((a,b)=>a.time.localeCompare(b.time))[0].time
+    ?route.rideLog.slice().sort((a,b)=>(rideMs(a)??Infinity)-(rideMs(b)??Infinity))[0]
     :null;
   const gain=elevFt?elevFt.reduce((s,v,i)=>i>0&&v>elevFt[i-1]?s+(v-elevFt[i-1]):s,0):null;
 
   return(
     <div style={{width:"82vw",maxWidth:320,flexShrink:0,background:"#0c0a07",
       border:`1px solid ${isActive?GOLD:"#1e1c18"}`,display:"flex",flexDirection:"column",
-      transition:"border-color .2s",marginRight:16}}>
+      transition:"border-color .2s",marginRight:16,scrollSnapAlign:"start"}}>
       {/* Card header */}
       <div style={{padding:"12px 14px 8px"}}>
-        <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:7,color:GOLD_LOW,letterSpacing:3,marginBottom:3}}>
+        <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:GOLD_LOW,letterSpacing:3,marginBottom:3}}>
           {route.type==="loop"?"LOOP":route.type==="out-back"?"OUT & BACK":"ROUTE"} · {route.region}
         </div>
         <div style={{fontFamily:"'Saira Condensed',sans-serif",fontWeight:800,fontSize:20,color:BONE,lineHeight:1,marginBottom:8}}>{route.name}</div>
         <div style={{display:"flex",gap:12}}>
           <div style={{fontFamily:"'Saira Condensed',sans-serif",fontWeight:700,fontSize:18,color:GOLD}}>{route.miles}<span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:GOLD_LOW,marginLeft:3}}>MI</span></div>
-          {gain&&<div style={{fontFamily:"'Saira Condensed',sans-serif",fontWeight:600,fontSize:14,color:TEAL,alignSelf:"flex-end"}}>+{Math.round(gain/10)*10}<span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:7,color:TEAL,marginLeft:2}}>FT</span></div>}
-          {best&&<div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:CHROME,alignSelf:"flex-end",marginLeft:"auto"}}>{best}</div>}
+          {gain!=null&&gain>0&&<div style={{fontFamily:"'Saira Condensed',sans-serif",fontWeight:600,fontSize:14,color:TEAL,alignSelf:"flex-end"}}>+{Math.round(gain/10)*10}<span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:TEAL,marginLeft:2}}>FT{elevIsEst?" EST":""}</span></div>}
+          {best&&<div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:CHROME,alignSelf:"flex-end",marginLeft:"auto"}}>{best.time}<span style={{fontSize:8,color:GOLD_LOW,marginLeft:4}}>BEST</span></div>}
         </div>
       </div>
 
@@ -1324,21 +1497,31 @@ function RouteCard({route,elevFt,onLog,isActive,onActivate,onDeactivate}){
       {isActive&&<div style={{borderTop:`1px solid #1e1c18`,padding:"0 14px 14px"}}>
         <ElevProfile elevFt={elevFt} miles={route.miles}/>
         <div style={{marginTop:16}}>
-          <RideTimer onLog={(ms,notes)=>onLog(route.id,ms,notes)}/>
+          <RideTimer running={!!(activeRide&&activeRide.routeId===route.id)}
+            startedAt={activeRide?activeRide.t0:0}
+            otherRide={!!(activeRide&&activeRide.routeId!==route.id)}
+            onStart={()=>onStartRide(route.id)} onStop={onClearRide}
+            onLog={(ms,notes)=>onLog(route.id,ms,notes)}/>
         </div>
         {route.rideLog.length>0&&<div style={{marginTop:16,borderTop:"1px solid #141210",paddingTop:12}}>
           <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:GOLD_LOW,letterSpacing:3,marginBottom:8}}>RIDE LOG</div>
-          {route.rideLog.slice(0,5).map((r,i)=>(
+          {route.rideLog.slice(0,5).map((r,i)=>{
+            const ms=rideMs(r);
+            const mph=ms?route.miles/(ms/3600000):null;
+            const isBest=best&&r.ts===best.ts;
+            return(
             <div key={i} style={{display:"flex",justifyContent:"space-between",
               padding:"6px 0",borderTop:i>0?"1px solid #0e0c0a":"none"}}>
               <div>
-                <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:BONE}}>{r.date}</div>
-                {r.notes&&<div style={{fontFamily:"'Saira Semi Condensed',sans-serif",fontSize:11,color:"#3a3428",marginTop:2}}>{r.notes}</div>}
+                <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:BONE}}>{r.date}
+                  {mph!=null&&isFinite(mph)&&<span style={{color:"#665c4a"}}> · {mph.toFixed(0)} MPH AVG</span>}
+                </div>
+                {r.notes&&<div style={{fontFamily:"'Saira Semi Condensed',sans-serif",fontSize:11,color:"#665c4a",marginTop:2}}>{r.notes}</div>}
               </div>
               <div style={{fontFamily:"'Saira Condensed',sans-serif",fontWeight:600,fontSize:16,
-                color:i===0?GOLD:CHROME,flexShrink:0,marginLeft:12}}>{r.time}</div>
+                color:isBest?GOLD:CHROME,flexShrink:0,marginLeft:12}}>{r.time}</div>
             </div>
-          ))}
+          );})}
         </div>}
       </div>}
     </div>
@@ -1376,7 +1559,7 @@ function TrackDaySection({settings,persist}){
           {TRACK_HOTSPOTS.map(h=>{
             const done=!!checklist[h.id];
             return(
-              <div key={h.id} onClick={()=>toggleCheck(h.id)}
+              <div key={h.id} onClick={()=>{buzz(6);toggleCheck(h.id);}}
                 style={{display:"flex",alignItems:"flex-start",gap:12,padding:"9px 0",
                   borderTop:"1px solid #141210",cursor:"pointer"}}>
                 <div style={{width:18,height:18,border:`1.5px solid ${done?TEAL:"#3a3428"}`,
@@ -1387,7 +1570,7 @@ function TrackDaySection({settings,persist}){
                 <div style={{flex:1}}>
                   <div style={{fontFamily:"'Saira Condensed',sans-serif",fontWeight:700,fontSize:15,
                     color:done?CHROME:BONE,textDecoration:done?"line-through":"none"}}>{h.label}</div>
-                  <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#3a3428",marginTop:2}}>{h.summary.split(".")[0]}.</div>
+                  <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#665c4a",marginTop:2}}>{h.summary.split(".")[0]}.</div>
                 </div>
               </div>
             );
@@ -1395,7 +1578,7 @@ function TrackDaySection({settings,persist}){
 
           <div style={{display:"flex",gap:8,marginTop:14}}>
             <div style={{flex:1}}>
-              <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:7,color:"#2a2520",letterSpacing:2,marginBottom:4}}>NEXT TRACK DAY</div>
+              <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#564e40",letterSpacing:2,marginBottom:4}}>NEXT TRACK DAY</div>
               <input type="date" value={s.nextTrackDay||""} onChange={e=>upd("nextTrackDay",e.target.value)}
                 style={{width:"100%",background:"#090807",border:"1px solid #1e1c18",color:BONE,
                   fontFamily:"'Share Tech Mono',monospace",fontSize:11,padding:"7px 8px",outline:"none"}}/>
@@ -1409,12 +1592,12 @@ function TrackDaySection({settings,persist}){
         </div>
       ):(
         <div>
-          <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#2a2520",lineHeight:1.7,marginBottom:12}}>
+          <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#564e40",lineHeight:1.7,marginBottom:12}}>
             No track day scheduled. Add one below and six prep-item nodes will appear on the bike.{" "}
-            <span style={{color:"#3a3428"}}>The bike won't know what it's missing until you give it a reason to care.</span>
+            <span style={{color:"#665c4a"}}>The bike won't know what it's missing until you give it a reason to care.</span>
           </div>
           <div>
-            <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:7,color:"#2a2520",letterSpacing:2,marginBottom:4}}>NEXT TRACK DAY</div>
+            <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#564e40",letterSpacing:2,marginBottom:4}}>NEXT TRACK DAY</div>
             <input type="date" value={s.nextTrackDay||""} onChange={e=>upd("nextTrackDay",e.target.value)}
               style={{width:"100%",background:"#090807",border:"1px solid #1e1c18",color:BONE,
                 fontFamily:"'Share Tech Mono',monospace",fontSize:11,padding:"7px 8px",outline:"none"}}/>
@@ -1433,7 +1616,7 @@ class RideErrorBoundary extends React.Component{
       <div style={{position:"absolute",inset:0,zIndex:20,background:INK,display:"flex",flexDirection:"column",
         alignItems:"center",justifyContent:"center",padding:32,gap:16}}>
         <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:BRAKE,letterSpacing:3}}>RIDE TAB ERROR</div>
-        <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#3a3428",letterSpacing:1,textAlign:"center"}}>{this.state.err}</div>
+        <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#665c4a",letterSpacing:1,textAlign:"center"}}>{this.state.err}</div>
         <button onClick={()=>this.setState({err:null})}
           style={{marginTop:8,fontFamily:"'Share Tech Mono',monospace",fontSize:9,letterSpacing:2,
             padding:"8px 20px",background:"transparent",border:`1px solid ${GOLD}`,color:GOLD,cursor:"pointer"}}>
@@ -1444,8 +1627,10 @@ class RideErrorBoundary extends React.Component{
     return this.props.children;
   }
 }
-function RideTab({routes,persist,settings}){
-  const [activeId,setActiveId]=useState(null);
+function RideTab({routes,persist,settings,activeRide}){
+  const [activeId,setActiveId]=useState(activeRide?activeRide.routeId:null);
+  const startRide=(routeId)=>persist(p=>({...p,activeRide:{routeId,t0:Date.now()}}));
+  const clearRide=()=>persist(p=>({...p,activeRide:null}));
   // Initialize all Leaflet maps on first render via the RouteCard useEffects
   // Elevation: load from cache or fetch
   const [elevCache,setElevCache]=useState(()=>{
@@ -1453,6 +1638,7 @@ function RideTab({routes,persist,settings}){
     routes.forEach(r=>{if(r.elevFt)out[r.id]=r.elevFt;});
     return out;
   });
+  const [estIds,setEstIds]=useState({}); // routes whose profile is synthetic, not fetched
 
   useEffect(()=>{
     routes.forEach(r=>{
@@ -1464,9 +1650,12 @@ function RideTab({routes,persist,settings}){
           persist(p=>({...p,routes:p.routes.map(rr=>rr.id===r.id?{...rr,elevFt:ft}:rr)}));
         })
         .catch(()=>{
+          // Offline fallback is a plausible-looking but FABRICATED profile —
+          // it is flagged so the UI labels it EST instead of passing it off as real.
           try{
             const ft=syntheticElevation(pts);
             setElevCache(prev=>({...prev,[r.id]:ft}));
+            setEstIds(prev=>({...prev,[r.id]:true}));
           }catch{}
         });
     });
@@ -1476,13 +1665,13 @@ function RideTab({routes,persist,settings}){
     const now=new Date();
     const entry={
       date:now.toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}),
-      time:fmtTime(ms),notes,ts:Date.now(),
+      time:fmtTime(ms),ms,notes,ts:Date.now(),
     };
     persist(p=>({...p,routes:p.routes.map(r=>r.id===routeId?{...r,rideLog:[entry,...r.rideLog]}:r)}));
   };
 
   return(
-    <div style={{position:"absolute",inset:0,zIndex:20,background:INK,display:"flex",flexDirection:"column"}}>
+    <div style={{position:"absolute",inset:0,zIndex:20,background:INK,display:"flex",flexDirection:"column",animation:"panelIn .25s ease"}}>
       {/* Header */}
       <div style={{padding:"12px 20px 10px",borderBottom:"1px solid #181614",
         background:"linear-gradient(180deg,#0d0b09,#080604)",flexShrink:0}}>
@@ -1492,12 +1681,14 @@ function RideTab({routes,persist,settings}){
       {/* Horizontal route card scroll */}
       <div style={{flex:1,overflowY:"auto",paddingBottom:180}}>
         <div style={{overflowX:"auto",display:"flex",padding:"16px 20px 4px",
+          scrollSnapType:"x mandatory",scrollPaddingLeft:20,
           scrollbarWidth:"none",msOverflowStyle:"none",alignItems:"flex-start"}}>
           {routes.map(r=>(
-            <RouteCard key={r.id} route={r} elevFt={elevCache[r.id]||null}
+            <RouteCard key={r.id} route={r} elevFt={elevCache[r.id]||null} elevIsEst={!!estIds[r.id]}
               isActive={activeId===r.id}
               onActivate={()=>setActiveId(r.id)}
               onDeactivate={()=>setActiveId(null)}
+              activeRide={activeRide} onStartRide={startRide} onClearRide={clearRide}
               onLog={logRide}/>
           ))}
         </div>
@@ -1517,23 +1708,56 @@ export default function R6Dashboard(){
   const spritesRef=useRef([]);
   const rafRef=useRef(null);
   const isHomeRef=useRef(true); // flag checked inside anim loop — keeps loop alive, skips render off-HOME
-  const [store,persist]=useStorage();
+  const [store,persist,storageReady]=useStorage();
   const logEntries=store.logEntries;
   const miles=store.miles;
   const routes=store.routes||DEFAULT_ROUTES;
   const settings=store.settings||DEFAULT_STATE.settings;
   const [active,setActive]=useState(null);
   const [tab,setTab]=useState("home");
+  const [fixFocus,setFixFocus]=useState(null); // hotspot id to auto-expand in FIX
+  const activeIdRef=useRef(null);              // read inside the anim loop
 
-  const addLog=(entry)=>persist(p=>({...p,logEntries:[...p.logEntries,entry]}));
+  // PWA meta tags — a DOM side effect, so it belongs in an effect, not render
+  useEffect(()=>{
+    if(document.querySelector('meta[name="apple-mobile-web-app-capable"]'))return;
+    [["apple-mobile-web-app-capable","yes"],
+     ["apple-mobile-web-app-status-bar-style","black-translucent"],
+     ["theme-color","#050505"]].forEach(([name,content])=>{
+      const m=document.createElement('meta');m.name=name;m.content=content;document.head.appendChild(m);});
+  },[]);
+
+  const addLog=(entry)=>persist(p=>({...p,logEntries:[...p.logEntries,entry],
+    procProgress:{...(p.procProgress||{}),[entry.id]:{}}}));
+  const toggleProcStep=(id,i)=>persist(p=>{
+    const cur=(p.procProgress||{})[id]||{};
+    return {...p,procProgress:{...(p.procProgress||{}),[id]:{...cur,[i]:!cur[i]}}};
+  });
   const delLog=(ts)=>persist(p=>({...p,logEntries:p.logEntries.filter(e=>e.ts!==ts)}));
-  const resetAll=()=>{try{localStorage.removeItem(STORAGE_KEY);}catch{}persist(()=>DEFAULT_STATE);};
+  const resetAll=()=>{try{window.storage&&window.storage.delete(STORAGE_KEY).catch(()=>{});}catch{}persist(()=>DEFAULT_STATE);};
 
   const overdueCt=ALL_HOTSPOTS.filter(h=>calcTier(h,miles,logEntries,settings)==="OVERDUE").length;
+  // Service health 0–100 — a maintenance load gauge, not a verdict on the
+  // bike. A solid machine with a service backlog still reads as rideable.
+  const readiness=(()=>{
+    let sc=100;
+    ALL_HOTSPOTS.forEach(h=>{
+      if(h.trackPrepOnly)return;
+      const t=calcTier(h,miles,logEntries,settings);
+      if(t==="OVERDUE")sc-=7;else if(t==="DUE_NOW")sc-=3;else if(t==="COMING_UP")sc-=1;
+    });
+    const rd=daysUntil(settings.registration),id=daysUntil(settings.inspection);
+    if(rd!=null&&rd<=0)sc-=8;
+    if(id!=null&&id<=0)sc-=8;
+    const worstTire=Math.max(tireAgeYears(settings.tireFrontDOT)||0,tireAgeYears(settings.tireRearDOT)||0);
+    if(worstTire>=6)sc-=8;else if(worstTire>=5)sc-=4;
+    return Math.max(0,Math.min(100,Math.round(sc)));
+  })();
+  // "any attention items" — monitor-only nodes don't count against all-clear
   const anyVisible=ALL_HOTSPOTS.some(h=>{
     const tier=calcTier(h,miles,logEntries,settings);
     if(h.trackPrepOnly)return!!(settings&&settings.nextTrackDay);
-    return ["OVERDUE","DUE_NOW","COMING_UP"].includes(tier)||(h.conditionBased&&tier!=="MONITOR");
+    return ["OVERDUE","DUE_NOW","COMING_UP"].includes(tier);
   });
 
   /* ── 3D SCENE — build once ── */
@@ -1559,11 +1783,29 @@ export default function R6Dashboard(){
     renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.05;
     mount.appendChild(renderer.domElement);
 
-    scene.add(new THREE.AmbientLight(0x1c1c1e,1.5));
-    const key=new THREE.DirectionalLight(0xf2f0ec,3.2);key.position.set(3,7,5);scene.add(key);
-    const rim=new THREE.DirectionalLight(0x8a8a90,1.6);rim.position.set(-5,2,-4);scene.add(rim);
-    const under=new THREE.DirectionalLight(0x3a3a3c,0.6);under.position.set(0,-3,2);scene.add(under);
-    const fill2=new THREE.DirectionalLight(0x0c0c0d,0.5);fill2.position.set(3,0,-3);scene.add(fill2);
+    /* Procedural studio environment. Without an env map, the high-metalness
+       wheels (0.94) and exhaust (0.96) have almost nothing to reflect and
+       render flat/near-black under directional lights alone. A tiny equirect
+       gradient with two "softbox" strips and a warm floor bounce gives the
+       metals real reflections at negligible cost. */
+    const envC=document.createElement('canvas');envC.width=64;envC.height=32;
+    const ecx=envC.getContext('2d');
+    const eg=ecx.createLinearGradient(0,0,0,32);
+    eg.addColorStop(0,'#22272e');eg.addColorStop(0.55,'#0b0906');eg.addColorStop(1,'#1c150c');
+    ecx.fillStyle=eg;ecx.fillRect(0,0,64,32);
+    ecx.fillStyle='rgba(255,243,214,0.9)';ecx.fillRect(5,3,12,7);ecx.fillRect(38,4,14,6);
+    ecx.fillStyle='rgba(197,162,75,0.3)';ecx.fillRect(24,22,16,4);
+    const envTex=new THREE.CanvasTexture(envC);
+    envTex.mapping=THREE.EquirectangularReflectionMapping;
+    const pmrem=new THREE.PMREMGenerator(renderer);
+    scene.environment=pmrem.fromEquirectangular(envTex).texture;
+    envTex.dispose();pmrem.dispose();
+
+    scene.add(new THREE.AmbientLight(0x1c1c1e,1.3));
+    const key=new THREE.DirectionalLight(0xfff0da,3.1);key.position.set(3,7,5);scene.add(key);
+    const rim=new THREE.DirectionalLight(0x9aa6ba,1.9);rim.position.set(-5,2,-4);scene.add(rim);
+    const under=new THREE.DirectionalLight(0x3a3a3c,0.5);under.position.set(0,-3,2);scene.add(under);
+    const fill2=new THREE.DirectionalLight(0x0c0c0d,0.4);fill2.position.set(3,0,-3);scene.add(fill2);
 
     const shC=document.createElement('canvas');shC.width=shC.height=256;
     const sx=shC.getContext('2d');
@@ -1575,11 +1817,13 @@ export default function R6Dashboard(){
     shadow.rotation.x=-Math.PI/2;scene.add(shadow);
 
     const group=new THREE.Group();scene.add(group);
-    const matBody=new THREE.MeshStandardMaterial({color:0x1c1c22,metalness:0.5,roughness:0.42});
-    const matBody2=new THREE.MeshStandardMaterial({color:0x18181e,metalness:0.45,roughness:0.48});
+    const matBody=new THREE.MeshStandardMaterial({color:0x0a0a0e,metalness:0.25,roughness:0.3});
+    const matBody2=new THREE.MeshStandardMaterial({color:0x08080c,metalness:0.22,roughness:0.36});
     const matWheel=new THREE.MeshStandardMaterial({color:new THREE.Color(GOLD),metalness:0.94,roughness:0.18});
     const matExh=new THREE.MeshStandardMaterial({color:0x7a5228,metalness:0.96,roughness:0.16});
     const matGlass=new THREE.MeshStandardMaterial({color:0x10141a,metalness:0.75,roughness:0.04,transparent:true,opacity:0.42});
+    matWheel.envMapIntensity=1.6;matExh.envMapIntensity=1.5;matGlass.envMapIntensity=1.2;
+    matBody.envMapIntensity=0.22;matBody2.envMapIntensity=0.18;
     const matFor=(m)=>[matBody,matExh,matWheel,matBody2,matGlass][m]||matBody;
 
     const bytes=b64ToBytes(MODEL_B64);
@@ -1620,7 +1864,8 @@ export default function R6Dashboard(){
       anchor.z+=NUDGE;
       const col=new THREE.Color(TIER_C[hh.tier]||ASH);
       const haloMat=new THREE.SpriteMaterial({map:ringTex,color:col,transparent:true,opacity:0.28,blending:THREE.AdditiveBlending,depthTest:true});
-      const halo=new THREE.Sprite(haloMat);halo.scale.set(0.26,0.26,0.26);halo.position.copy(anchor);group.add(halo);
+      const halo=new THREE.Sprite(haloMat);halo.scale.set(0.26,0.26,0.26);halo.position.copy(anchor);
+      halo.userData=hh;group.add(halo);
       const ringMat=new THREE.SpriteMaterial({map:ringTex,color:col,transparent:true,opacity:0.95,depthTest:true});
       const ring=new THREE.Sprite(ringMat);ring.scale.set(0.11,0.11,0.11);ring.position.copy(anchor);
       ring.userData=hh;group.add(ring);
@@ -1639,27 +1884,45 @@ export default function R6Dashboard(){
 
     const ray=new THREE.Raycaster();ray.params.Sprite={threshold:0.06};
     const ndc=new THREE.Vector2();
-    let drag=false,moved=false,px=0,py=0,ldx=0,ldy=0;
-    const down=(e)=>{drag=true;moved=false;velT=0;velP=0;const t=e.touches?e.touches[0]:e;px=t.clientX;py=t.clientY;};
-    const move=(e)=>{if(!drag)return;const t=e.touches?e.touches[0]:e;
+    let drag=false,moved=false,px=0,py=0,ldx=0,ldy=0,pinch=0;
+    let lastTouch=Date.now(); // for the idle showroom auto-orbit
+    const touchDist=(e)=>{const a=e.touches[0],b=e.touches[1];return Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);};
+    const clampDist=(d)=>Math.max(radius*1.5,Math.min(radius*5,d));
+    const down=(e)=>{
+      lastTouch=Date.now();
+      if(e.touches&&e.touches.length===2){drag=false;moved=true;pinch=touchDist(e);return;}
+      drag=true;moved=false;velT=0;velP=0;const t=e.touches?e.touches[0]:e;px=t.clientX;py=t.clientY;};
+    const move=(e)=>{
+      if(e.touches&&e.touches.length===2){ // pinch zoom
+        const d=touchDist(e);
+        if(pinch>0&&d>0){dist=clampDist(dist*(pinch/d));updCam();}
+        pinch=d;moved=true;return;}
+      if(!drag)return;const t=e.touches?e.touches[0]:e;
       ldx=t.clientX-px;ldy=t.clientY-py;
       if(Math.abs(ldx)+Math.abs(ldy)>4)moved=true;
       thetaT+=ldx*0.013;phiT=Math.max(0.12,Math.min(Math.PI-0.12,phiT-ldy*0.013));
       px=t.clientX;py=t.clientY;};
     const up=(e)=>{
+      pinch=0;
       if(drag&&moved){velT=ldx*0.007;velP=-ldy*0.007;}
       drag=false;if(moved)return;
       const r=renderer.domElement.getBoundingClientRect();const t=e.changedTouches?e.changedTouches[0]:e;
       ndc.x=((t.clientX-r.left)/r.width)*2-1;ndc.y=-((t.clientY-r.top)/r.height)*2+1;
       ray.setFromCamera(ndc,cam);
-      const visRings=spritesRef.current.filter(p=>p.ring.visible).map(p=>p.ring);
-      const hit=ray.intersectObjects(visRings,false);
-      if(hit.length)setActive(hit[0].object.userData);else setActive(null);
+      // rings AND their larger halos are tap targets — much easier on touch
+      const targets=[];
+      spritesRef.current.forEach(pp=>{
+        if(pp.ring.visible)targets.push(pp.ring);
+        if(pp.halo.visible)targets.push(pp.halo);
+      });
+      const hit=ray.intersectObjects(targets,false);
+      if(hit.length){buzz(8);setActive(hit[0].object.userData);}else setActive(null);
     };
     const el=renderer.domElement;
     el.addEventListener('mousedown',down);el.addEventListener('mousemove',move);window.addEventListener('mouseup',up);
     el.addEventListener('touchstart',down,{passive:true});el.addEventListener('touchmove',move,{passive:true});el.addEventListener('touchend',up);
-    el.addEventListener('wheel',(e)=>{e.preventDefault();dist=Math.max(radius*1.5,Math.min(radius*5,dist+e.deltaY*0.01*radius));updCam();},{passive:false});
+    const onWheel=(e)=>{e.preventDefault();lastTouch=Date.now();dist=clampDist(dist+e.deltaY*0.01*radius);updCam();};
+    el.addEventListener('wheel',onWheel,{passive:false});
 
     let pulse=0;
     const DECAY=0.88;
@@ -1667,13 +1930,29 @@ export default function R6Dashboard(){
       rafRef.current=requestAnimationFrame(anim);
       if(!isHomeRef.current)return; // off HOME — skip render, save battery, loop stays alive
       pulse+=0.04;
+      const aid=activeIdRef.current;
+      // showroom turntable: slow orbit after 6s without input, paused while a card is open
+      if(!drag&&!aid&&Date.now()-lastTouch>6000)thetaT+=0.0016;
       if(!drag){velT*=DECAY;velP*=DECAY;thetaT+=velT;phiT=Math.max(0.12,Math.min(Math.PI-0.12,phiT+velP));}
       theta+=(thetaT-theta)*0.1;phi+=(phiT-phi)*0.1;updCam();
       const sc=0.11+Math.sin(pulse)*0.012;
       const haloSc=0.27+Math.sin(pulse*0.7)*0.05;
       const haloA=0.24+Math.sin(pulse*0.85)*0.09;
-      spritesRef.current.forEach(({ring,halo})=>{
-        if(ring.visible){ring.scale.set(sc,sc,sc);halo.scale.set(haloSc,haloSc,haloSc);halo.material.opacity=haloA;}
+      spritesRef.current.forEach(({hh,ring,halo})=>{
+        if(!ring.visible)return;
+        const sel=aid===hh.id;
+        if(ring.userData.mon&&!sel){
+          ring.scale.set(0.08,0.08,0.08);
+          ring.material.opacity=aid?0.12:0.34;
+          halo.scale.set(0.26,0.26,0.26);   // invisible, but still the tap target
+          halo.material.opacity=0;
+          return;
+        }
+        const k=sel?1.45:1;
+        ring.scale.set(sc*k,sc*k,sc*k);
+        ring.material.opacity=sel?1:(aid?0.4:0.95);
+        halo.scale.set(haloSc*k,haloSc*k,haloSc*k);
+        halo.material.opacity=sel?Math.min(0.55,haloA+0.22):(aid?0.08:haloA);
       });
       renderer.render(scene,cam);
     };
@@ -1682,6 +1961,9 @@ export default function R6Dashboard(){
     const onR=()=>{const w=mount.clientWidth,hh=mount.clientHeight;cam.aspect=w/hh;cam.updateProjectionMatrix();renderer.setSize(w,hh);};
     window.addEventListener('resize',onR);
     return()=>{cancelAnimationFrame(rafRef.current);window.removeEventListener('resize',onR);window.removeEventListener('mouseup',up);
+      el.removeEventListener('mousedown',down);el.removeEventListener('mousemove',move);
+      el.removeEventListener('touchstart',down);el.removeEventListener('touchmove',move);el.removeEventListener('touchend',up);
+      el.removeEventListener('wheel',onWheel);
       renderer.dispose();if(renderer.domElement.parentNode)mount.removeChild(renderer.domElement);};
   },[]);
 
@@ -1689,6 +1971,7 @@ export default function R6Dashboard(){
   useEffect(()=>{
     isHomeRef.current=(tab==="home");
   },[tab]);
+  useEffect(()=>{activeIdRef.current=active?active.id:null;},[active]);
 
   /* ── LIVE VISIBILITY ── */
   useEffect(()=>{
@@ -1696,9 +1979,11 @@ export default function R6Dashboard(){
     const trackDayScheduled=!!(settings&&settings.nextTrackDay);
     pairs.forEach(({hh,ring,halo})=>{
       const tier=calcTier(hh,miles,logEntries,settings);
-      const show=hh.trackPrepOnly?trackDayScheduled
-        :["OVERDUE","DUE_NOW","COMING_UP"].includes(tier)||(hh.conditionBased&&tier!=="MONITOR");
-      ring.visible=show;halo.visible=show;
+      const isMon=tier==="MONITOR";
+      const show=hh.trackPrepOnly?trackDayScheduled:true;
+      ring.visible=show;
+      halo.visible=show; // stays visible even for monitor — it's the tap target
+      ring.userData.mon=isMon;
       if(show){const col=new THREE.Color(TIER_C[tier]||ASH);ring.material.color=col;halo.material.color=col;}
     });
   },[miles,logEntries,settings]);
@@ -1706,28 +1991,23 @@ export default function R6Dashboard(){
   const isHome=tab==="home";
 
   return(
-    <div style={{position:"relative",width:"100%",height:"100dvh",maxWidth:900,margin:"0 auto",overflow:"hidden",
+    <div style={{position:"relative",width:"100%",height:"100dvh",maxWidth:900,margin:"0 auto",
       background:INK,fontFamily:"'Saira Semi Condensed',sans-serif",overflow:"hidden"}}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@400;600;700;800&family=Saira+Semi+Condensed:wght@300;400;500&family=Share+Tech+Mono&family=Orbitron:wght@700;900&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@400;600;700;800&family=Saira+Semi+Condensed:wght@300;400;500&family=Share+Tech+Mono&display=swap');
         *{box-sizing:border-box}button{cursor:pointer}a{cursor:pointer}
         input::placeholder{color:#2a2520}
         input[type="date"]::-webkit-calendar-picker-indicator{filter:invert(0.3) sepia(1) hue-rotate(10deg)}
         ::-webkit-scrollbar{width:3px}::-webkit-scrollbar-track{background:#060504}::-webkit-scrollbar-thumb{background:#2a2520}
         details summary::-webkit-details-marker{display:none}
         @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.25}}
+        @keyframes panelIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+        button:active{transform:translateY(1px)}
+        @media (prefers-reduced-motion:reduce){*{animation-duration:.01ms !important;transition-duration:.01ms !important}}
       `}</style>
-      {/* PWA meta — enables Add to Home Screen on Android + iOS */}
-      {(()=>{
-        if(document.querySelector('meta[name="apple-mobile-web-app-capable"]'))return null;
-        const m1=document.createElement('meta');m1.name='apple-mobile-web-app-capable';m1.content='yes';document.head.appendChild(m1);
-        const m2=document.createElement('meta');m2.name='apple-mobile-web-app-status-bar-style';m2.content='black-translucent';document.head.appendChild(m2);
-        const m3=document.createElement('meta');m3.name='theme-color';m3.content='#050505';document.head.appendChild(m3);
-        return null;
-      })()}
 
       {/* 3D canvas — always mounted, dimmed on other tabs */}
-      <div ref={mountRef} style={{position:"absolute",inset:0,
+      <div ref={mountRef} style={{position:"absolute",inset:0,touchAction:"none",
         opacity:isHome?1:0.06,transition:"opacity .4s ease",pointerEvents:isHome?"all":"none"}}/>
 
       {/* HOME overlays */}
@@ -1747,6 +2027,7 @@ export default function R6Dashboard(){
         {/* Date alerts */}
         {(()=>{
           const s=settings||{};const alerts=[];
+          if(store.activeRide)alerts.push({label:"RIDE TIMER RUNNING — OPEN RIDE TAB",color:NEUTRAL_GREEN,icon:"▶"});
           const rd=daysUntil(s.registration),id=daysUntil(s.inspection),td=daysUntil(s.nextTrackDay);
           if(td!=null&&td>=0&&td<=30) alerts.push({label:`TRACK DAY ${td===0?"TODAY":td===1?"TOMORROW":`IN ${td} DAYS`}`,color:GOLD_HI,icon:"⬡"});
           if(rd!=null&&rd<=60) alerts.push({label:`REGISTRATION ${rd<=0?"EXPIRED":`EXPIRES IN ${rd} DAYS`}`,color:rd<=14?BRAKE:rd<=30?BRONZE:GOLD_LOW,icon:"⚠"});
@@ -1772,7 +2053,7 @@ export default function R6Dashboard(){
 
         {/* Legend */}
         {!active&&anyVisible&&<div style={{position:"absolute",left:14,bottom:186,zIndex:5,display:"flex",flexDirection:"column",gap:4}}>
-          {[["OVERDUE",BRAKE],["DUE NOW",BRONZE],["COMING UP",GOLD],
+          {[["OVERDUE",BRAKE],["DUE NOW",BRONZE],["COMING UP",GOLD],["MONITORED",ASH],
             ...(settings&&settings.nextTrackDay?[["TRACK PREP",GOLD_HI]]:[])]
             .map(([l,c])=>(
             <div key={l} style={{display:"flex",alignItems:"center",gap:6}}>
@@ -1785,17 +2066,26 @@ export default function R6Dashboard(){
         {/* Node card */}
         {active&&<NodeCard h={active} liveTier={calcTier(active,miles,logEntries,settings)}
           onClose={()=>setActive(null)}
-          onSwitchFix={()=>{setTab("fix");setActive(null);}}/>}
+          onSwitchFix={()=>{setFixFocus(active.id);setTab("fix");setActive(null);}}/>}
       </>}
 
       {/* Tab panels */}
       {tab==="fix"&&<FixTab miles={miles} logEntries={logEntries} settings={settings}
-        onAddLog={addLog} onDelLog={delLog}/>}
-      {tab==="ride"&&<RideErrorBoundary><RideTab routes={routes} persist={persist} settings={settings}/></RideErrorBoundary>}
+        onAddLog={addLog} onDelLog={delLog} focusId={fixFocus} onFocusDone={()=>setFixFocus(null)}
+        procProgress={store.procProgress||{}} onToggleStep={toggleProcStep}/>}
+      {tab==="ride"&&<RideErrorBoundary><RideTab routes={routes} persist={persist} settings={settings}
+        activeRide={store.activeRide||null}/></RideErrorBoundary>}
       {tab==="set"&&<SettingsTab state={store} persist={persist} resetAll={resetAll}
         onSwitchRide={()=>setTab("ride")}/>}
 
-      <Dock active={tab} onChange={(t)=>{setTab(t);setActive(null);}} overdueCt={overdueCt} miles={miles}/>
+      <Dock active={tab} onChange={(t)=>{setTab(t);setActive(null);}} overdueCt={overdueCt} miles={miles} readiness={readiness}/>
+
+      {/* storage hydration veil — fades once saved state is loaded */}
+      <div style={{position:"absolute",inset:0,zIndex:60,background:INK,
+        display:"flex",alignItems:"center",justifyContent:"center",
+        opacity:storageReady?0:1,pointerEvents:storageReady?"none":"auto",transition:"opacity .35s ease"}}>
+        <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:GOLD_LOW,letterSpacing:4}}>LOADING…</span>
+      </div>
     </div>
   );
 }
