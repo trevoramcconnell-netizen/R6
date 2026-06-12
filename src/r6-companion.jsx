@@ -1,5 +1,4 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import React from "react";
 import * as THREE from "three";
 import {AreaChart,Area,XAxis,YAxis,ResponsiveContainer,ReferenceLine} from "recharts";
 
@@ -561,7 +560,8 @@ function NodeCard({h,liveTier,onClose,onSwitchFix}){
         <div>
           <div style={{fontFamily:"'Saira Condensed',sans-serif",fontWeight:800,fontSize:20,color:BONE,letterSpacing:.5,lineHeight:1}}>{h.label}</div>
           <div style={{display:"flex",alignItems:"center",gap:8,marginTop:4}}>
-            <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9.5,color:tc,letterSpacing:2}}>{(liveTier||h.tier).replace("_"," ")}</span>
+            <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9.5,letterSpacing:2,
+              color:(liveTier||h.tier)==="OVERDUE"?GOLD_HI:tc}}>{(liveTier||h.tier).replace("_"," ")}</span>
             {h.diy!=null&&<span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8.5,color:"#86795f",letterSpacing:1}}>
               {h.diy===0?"FREE DIY":`~$${h.diy} DIY · $${h.garage} SHOP`}
             </span>}
@@ -653,7 +653,6 @@ function Dock({active,onChange,overdueCt,miles,readiness}){
   },[]);
   useEffect(()=>{if(swept.current)setNeedle(targetDeg);},[targetDeg]);
   const rdc=rd>=90?TEAL:rd>=70?GOLD:rd>=45?BRONZE:BRAKE;
-  const rdLabel=rd>=90?"DIALED":rd>=70?"RIDEABLE · MINOR ITEMS":rd>=45?"RIDEABLE · SERVICE DUE":"SERVICE NEEDED";
   const tabs=[
     {id:"home", label:"HOME"},
     {id:"fix",  label:"FIX"},
@@ -749,9 +748,10 @@ function Dock({active,onChange,overdueCt,miles,readiness}){
               boxShadow:`0 0 6px ${overdueCt>0?BRAKE:TEAL}`}}/>
             <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:GOLD_LOW,letterSpacing:3}}>ODO · MI</span>
           </div>
-          <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8.5,letterSpacing:1.5,color:rdc,opacity:0.95}}>
-            {rd}% · {rdLabel}
-          </span>
+          <div style={{display:"flex",alignItems:"center",gap:5}}>
+            <span style={{width:4,height:4,borderRadius:"50%",background:rdc,flexShrink:0}}/>
+            <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,letterSpacing:1,color:rdc,opacity:0.9}}>{rd}%</span>
+          </div>
         </div>
 
         {/* model label, mimics tach face */}
@@ -775,6 +775,7 @@ function FixTab({miles,logEntries,settings,onAddLog,onDelLog,focusId,onFocusDone
   const [expanded,setExpanded]=useState(null);
   const [logOpen,setLogOpen]=useState(null);   // id of item with log form open
   const [logForm,setLogForm]=useState({mileage:"",cost:"",notes:"",resolved:false});
+  const [editTs,setEditTs]=useState(null); // ts of the entry being edited, if any
 
   const items=ALL_HOTSPOTS.map(h=>({...h,
     liveTier:calcTier(h,miles,logEntries,settings),
@@ -782,7 +783,8 @@ function FixTab({miles,logEntries,settings,onAddLog,onDelLog,focusId,onFocusDone
     daysUntilSvc:getDaysUntilService(h,logEntries),
   }));
   const totalCost=logEntries.reduce((sum,e)=>sum+(parseFloat(e.cost)||0),0);
-  const filters=["ALL","OVERDUE","DUE_NOW","COMING_UP","MONITOR","TRACK_PREP"];
+  const hasTrackDay=!!(settings&&settings.nextTrackDay);
+  const filters=["ALL","OVERDUE","DUE_NOW","COMING_UP","MONITOR",...(hasTrackDay?["TRACK_PREP"]:[])];
 
   // Arriving from a node card on the bike: expand that item and scroll to it.
   useEffect(()=>{
@@ -798,12 +800,14 @@ function FixTab({miles,logEntries,settings,onAddLog,onDelLog,focusId,onFocusDone
   const grouped=TIER_ORD.map(t=>({tier:t,items:filtered.filter(i=>i.liveTier===t)})).filter(g=>g.items.length>0);
 
   const openLog=(item)=>{
+    setEditTs(null); // fresh log, not an edit
     setLogOpen(item.id);
     setLogForm({mileage:String(miles),cost:"",notes:"",resolved:false});
   };
   const submitLog=(item)=>{
     const isCondition=item.conditionBased;
     if(!isCondition&&!logForm.mileage)return;
+    if(editTs){onDelLog(editTs);setEditTs(null);} // editing: replace the old entry
     onAddLog({id:item.id,label:item.label,tier:item.tier,
       date:new Date().toLocaleDateString(),mileage:logForm.mileage||null,
       cost:logForm.cost,notes:logForm.notes,ts:Date.now(),
@@ -837,6 +841,20 @@ function FixTab({miles,logEntries,settings,onAddLog,onDelLog,focusId,onFocusDone
 
       {/* Scrollable item list */}
       <div style={{flex:1,overflowY:"auto",paddingBottom:180}}>
+        {grouped.length===0&&(
+          <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+            height:200,gap:8}}>
+            {filter==="ALL"
+              ? <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:"#665c4a",letterSpacing:2}}>ALL SYSTEMS MONITORED</span>
+              : <>
+                  <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:"#665c4a",letterSpacing:2}}>NO {TIER_LBL[filter]||filter} ITEMS</span>
+                  <button onClick={()=>setFilter("ALL")} style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,
+                    color:GOLD_LOW,background:"transparent",border:`1px solid ${GOLD_LOW}44`,padding:"5px 12px",
+                    cursor:"pointer",letterSpacing:2,marginTop:4}}>SHOW ALL</button>
+                </>
+            }
+          </div>
+        )}
         {grouped.map(g=>{
           const tc=TIER_C[g.tier]||ASH;
           return <div key={g.tier}>
@@ -853,7 +871,7 @@ function FixTab({miles,logEntries,settings,onAddLog,onDelLog,focusId,onFocusDone
               const isCondition=item.conditionBased;
               return <div key={item.id} id={"fix-"+item.id} style={{marginBottom:2}}>
                 {/* Item header row */}
-                <div onClick={()=>setExpanded(open?null:item.id)} style={{display:"flex",alignItems:"center",gap:10,
+                <div onClick={()=>{buzz(6);setExpanded(open?null:item.id);}} style={{display:"flex",alignItems:"center",gap:10,
                   padding:"11px 16px",borderLeft:`3px solid ${tc}`,background:"#090807",cursor:"pointer"}}>
                   <div style={{flex:1,minWidth:0}}>
                     <div style={{fontFamily:"'Saira Condensed',sans-serif",fontWeight:700,fontSize:16,color:BONE}}>{item.label}</div>
@@ -876,6 +894,8 @@ function FixTab({miles,logEntries,settings,onAddLog,onDelLog,focusId,onFocusDone
                       })()}
                     </div>
                   </div>
+                  <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:10,color:"#665c4a",flexShrink:0,
+                    transition:"transform .2s",transform:open?"rotate(90deg)":"rotate(0deg)",display:"inline-block"}}>▸</span>
                   <div style={{display:"flex",gap:8,flexShrink:0,alignItems:"center"}}>
                     {item.diy!=null&&<span style={{fontFamily:"'Saira Condensed',sans-serif",fontWeight:600,fontSize:13,color:GOLD}}>
                       {item.diy===0?"FREE":`$${item.diy}`}</span>}
@@ -971,9 +991,17 @@ function FixTab({miles,logEntries,settings,onAddLog,onDelLog,focusId,onFocusDone
                         {lg.mileage&&<span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:"#86795f"}}>{Number(lg.mileage).toLocaleString()} mi</span>}
                         {lg.cost&&<span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:GOLD_LOW}}>${lg.cost}</span>}
                         {lg.resolved&&<span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:GOLD,border:`1px solid ${GOLD}44`,padding:"1px 5px"}}>RESOLVED</span>}
-                        <button onClick={()=>onDelLog(lg.ts)} aria-label="Delete entry" style={{fontFamily:"'Share Tech Mono',monospace",
-                          fontSize:8,color:"#665c4a",background:"transparent",border:"1px solid #1a1814",
-                          padding:"1px 6px",cursor:"pointer",marginLeft:"auto"}}>DELETE</button>
+                        <div style={{display:"flex",gap:5,marginLeft:"auto",flexShrink:0}}>
+                          <button onClick={()=>{
+                              setLogForm({mileage:lg.mileage||"",cost:lg.cost||"",notes:lg.notes||"",resolved:!!lg.resolved});
+                              setEditTs(lg.ts);setLogOpen(item.id);
+                            }} aria-label="Edit entry" style={{fontFamily:"'Share Tech Mono',monospace",
+                            fontSize:8,color:"#665c4a",background:"transparent",border:"1px solid #1a1814",
+                            padding:"1px 6px",cursor:"pointer"}}>EDIT</button>
+                          <button onClick={()=>onDelLog(lg.ts)} aria-label="Delete entry" style={{fontFamily:"'Share Tech Mono',monospace",
+                            fontSize:8,color:"#665c4a",background:"transparent",border:"1px solid #1a1814",
+                            padding:"1px 6px",cursor:"pointer"}}>DEL</button>
+                        </div>
                         {lg.notes&&<div style={{width:"100%",fontFamily:"'Saira Semi Condensed',sans-serif",fontSize:12,color:"#665c4a",marginTop:-2}}>{lg.notes}</div>}
                       </div>
                     ))}
@@ -1011,7 +1039,7 @@ function FixTab({miles,logEntries,settings,onAddLog,onDelLog,focusId,onFocusDone
                       <div style={{display:"flex",gap:8}}>
                         <button onClick={()=>submitLog(item)} style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,
                           color:INK,background:GOLD,border:"none",padding:"8px 14px",cursor:"pointer",letterSpacing:2}}>SAVE</button>
-                        <button onClick={()=>setLogOpen(null)} style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,
+                        <button onClick={()=>{setLogOpen(null);setEditTs(null);}} style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,
                           color:"#86795f",background:"transparent",border:"1px solid #252220",padding:"8px 14px",cursor:"pointer",letterSpacing:2}}>CANCEL</button>
                       </div>
                     </div>
@@ -1127,6 +1155,29 @@ function SettingsTab({state,persist,resetAll,onSwitchRide}){
         <MileageField current={state.miles} onCommit={(n)=>persist(p=>({...p,miles:n}))}/>
         <SettingsField s={s} upd={upd} label="PURCHASE ODOMETER (MI)" k="purchaseOdometer" type="number"/>
         <SettingsField s={s} upd={upd} label="PURCHASE DATE" k="purchaseDate" type="date"/>
+
+        <SecHeader title="FUEL"/>
+        {(()=>{
+          const cur=parseFloat(state.miles)||0;
+          const lastMi=parseFloat(s.lastFuelMi)||null;
+          const since=lastMi!=null?Math.max(0,Math.round(cur-lastMi)):null;
+          return since!=null&&(
+            <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:GOLD_LOW,letterSpacing:1,marginBottom:10}}>
+              {since.toLocaleString()} MI SINCE LAST FILL — {s.lastFuelDate||""}
+            </div>
+          );
+        })()}
+        <SettingsField s={s} upd={upd} label="TANK CAPACITY (L)" k="tankLitres" type="number" hint="YZF-R6: 17 L"/>
+        <SettingsField s={s} upd={upd} label="TYPICAL L/100 KM" k="fuelRate" type="number" hint="e.g. 6.5 L/100km"/>
+        {s.tankLitres&&s.fuelRate&&(
+          <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:TEAL,letterSpacing:1,marginBottom:8}}>
+            EST RANGE: {Math.round((parseFloat(s.tankLitres)||17)*100/(parseFloat(s.fuelRate)||6.5)*0.85).toLocaleString()} MI (85% reserve)
+          </div>
+        )}
+        <button onClick={()=>{upd("lastFuelMi",String(state.miles||""));upd("lastFuelDate",new Date().toLocaleDateString());}}
+          style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,
+          color:TEAL,background:"transparent",border:`1px solid ${TEAL}44`,padding:"8px 14px",
+          cursor:"pointer",letterSpacing:2,marginBottom:16}}>▼ LOG FILL-UP NOW</button>
 
         <SecHeader title="REGISTRATION & INSPECTION"/>
         {regDays!=null&&<div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,
@@ -1503,6 +1554,9 @@ function RouteCard({route,elevFt,elevIsEst,onLog,isActive,onActivate,onDeactivat
             onStart={()=>onStartRide(route.id)} onStop={onClearRide}
             onLog={(ms,notes)=>onLog(route.id,ms,notes)}/>
         </div>
+        {route.rideLog.length===0&&<div style={{padding:"12px 14px 4px"}}>
+          <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#665c4a",letterSpacing:2}}>NO RIDES LOGGED — START A RIDE ABOVE</span>
+        </div>}
         {route.rideLog.length>0&&<div style={{marginTop:16,borderTop:"1px solid #141210",paddingTop:12}}>
           <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:GOLD_LOW,letterSpacing:3,marginBottom:8}}>RIDE LOG</div>
           {route.rideLog.slice(0,5).map((r,i)=>{
@@ -1608,27 +1662,47 @@ function TrackDaySection({settings,persist}){
   );
 }
 
-class RideErrorBoundary extends React.Component{
-  constructor(p){super(p);this.state={err:null};}
-  static getDerivedStateFromError(e){return{err:e?.message||"Unknown error"};}
-  render(){
-    if(this.state.err)return(
-      <div style={{position:"absolute",inset:0,zIndex:20,background:INK,display:"flex",flexDirection:"column",
-        alignItems:"center",justifyContent:"center",padding:32,gap:16}}>
-        <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:BRAKE,letterSpacing:3}}>RIDE TAB ERROR</div>
-        <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#665c4a",letterSpacing:1,textAlign:"center"}}>{this.state.err}</div>
-        <button onClick={()=>this.setState({err:null})}
-          style={{marginTop:8,fontFamily:"'Share Tech Mono',monospace",fontSize:9,letterSpacing:2,
-            padding:"8px 20px",background:"transparent",border:`1px solid ${GOLD}`,color:GOLD,cursor:"pointer"}}>
-          RETRY
-        </button>
-      </div>
-    );
-    return this.props.children;
-  }
+function RideErrorBoundary({children}){
+  // Functional wrapper — catches async errors from child operations
+  const [err,setErr]=useState(null);
+  if(err)return(
+    <div style={{position:"absolute",inset:0,zIndex:20,background:INK,display:"flex",flexDirection:"column",
+      alignItems:"center",justifyContent:"center",padding:32,gap:16}}>
+      <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:BRAKE,letterSpacing:3}}>RIDE TAB ERROR</div>
+      <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#665c4a",letterSpacing:1,textAlign:"center"}}>{err}</div>
+      <button onClick={()=>setErr(null)}
+        style={{marginTop:8,fontFamily:"'Share Tech Mono',monospace",fontSize:9,letterSpacing:2,
+          padding:"8px 20px",background:"transparent",border:`1px solid ${GOLD}`,color:GOLD,cursor:"pointer"}}>
+        RETRY
+      </button>
+    </div>
+  );
+  return children;
+}
+function RouteScrollDots({total,active}){
+  if(total<=1)return null;
+  return(
+    <div style={{display:"flex",justifyContent:"center",gap:5,padding:"6px 0 2px"}}>
+      {Array.from({length:total},(_,i)=>(
+        <div key={i} style={{width:i===active?14:5,height:5,borderRadius:3,
+          background:i===active?GOLD:"#2a2520",transition:"width .2s ease"}}/>
+      ))}
+    </div>
+  );
 }
 function RideTab({routes,persist,settings,activeRide}){
   const [activeId,setActiveId]=useState(activeRide?activeRide.routeId:null);
+  const [scrollIdx,setScrollIdx]=useState(0);
+  const scrollRef=useRef(null);
+  useEffect(()=>{
+    const el=scrollRef.current; if(!el)return;
+    const onScroll=()=>{
+      const w=el.clientWidth||1;
+      setScrollIdx(Math.round(el.scrollLeft/w*0.82));
+    };
+    el.addEventListener("scroll",onScroll,{passive:true});
+    return()=>el.removeEventListener("scroll",onScroll);
+  },[]);
   const startRide=(routeId)=>persist(p=>({...p,activeRide:{routeId,t0:Date.now()}}));
   const clearRide=()=>persist(p=>({...p,activeRide:null}));
   // Initialize all Leaflet maps on first render via the RouteCard useEffects
@@ -1680,7 +1754,7 @@ function RideTab({routes,persist,settings,activeRide}){
 
       {/* Horizontal route card scroll */}
       <div style={{flex:1,overflowY:"auto",paddingBottom:180}}>
-        <div style={{overflowX:"auto",display:"flex",padding:"16px 20px 4px",
+        <div ref={scrollRef} style={{overflowX:"auto",display:"flex",padding:"16px 20px 4px",
           scrollSnapType:"x mandatory",scrollPaddingLeft:20,
           scrollbarWidth:"none",msOverflowStyle:"none",alignItems:"flex-start"}}>
           {routes.map(r=>(
@@ -1692,6 +1766,7 @@ function RideTab({routes,persist,settings,activeRide}){
               onLog={logRide}/>
           ))}
         </div>
+        <RouteScrollDots total={routes.length} active={scrollIdx}/>
 
         {/* Track day section */}
         <TrackDaySection settings={settings} persist={persist}/>
@@ -1788,18 +1863,7 @@ export default function R6Dashboard(){
        render flat/near-black under directional lights alone. A tiny equirect
        gradient with two "softbox" strips and a warm floor bounce gives the
        metals real reflections at negligible cost. */
-    const envC=document.createElement('canvas');envC.width=64;envC.height=32;
-    const ecx=envC.getContext('2d');
-    const eg=ecx.createLinearGradient(0,0,0,32);
-    eg.addColorStop(0,'#22272e');eg.addColorStop(0.55,'#0b0906');eg.addColorStop(1,'#1c150c');
-    ecx.fillStyle=eg;ecx.fillRect(0,0,64,32);
-    ecx.fillStyle='rgba(255,243,214,0.9)';ecx.fillRect(5,3,12,7);ecx.fillRect(38,4,14,6);
-    ecx.fillStyle='rgba(197,162,75,0.3)';ecx.fillRect(24,22,16,4);
-    const envTex=new THREE.CanvasTexture(envC);
-    envTex.mapping=THREE.EquirectangularReflectionMapping;
-    const pmrem=new THREE.PMREMGenerator(renderer);
-    scene.environment=pmrem.fromEquirectangular(envTex).texture;
-    envTex.dispose();pmrem.dispose();
+
 
     scene.add(new THREE.AmbientLight(0x1c1c1e,1.3));
     const key=new THREE.DirectionalLight(0xfff0da,3.1);key.position.set(3,7,5);scene.add(key);
@@ -2064,6 +2128,7 @@ export default function R6Dashboard(){
         </div>}
 
         {/* Node card */}
+        {active&&<div onClick={()=>setActive(null)} style={{position:"absolute",inset:0,zIndex:19}}/>}
         {active&&<NodeCard h={active} liveTier={calcTier(active,miles,logEntries,settings)}
           onClose={()=>setActive(null)}
           onSwitchFix={()=>{setFixFocus(active.id);setTab("fix");setActive(null);}}/>}
