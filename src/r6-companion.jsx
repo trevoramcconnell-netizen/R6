@@ -691,8 +691,8 @@ function Dock({active,onChange,overdueCt,miles,readiness}){
     );
   };
   const Lcd=()=>(
-    <div style={{display:"flex",gap:3,alignItems:"center",
-      padding:"4px 8px",borderRadius:4,
+    <div className="lcd-live" style={{display:"flex",gap:3,alignItems:"center",
+      padding:"4px 8px",borderRadius:4,overflow:"hidden",
       background:"linear-gradient(180deg,#0c0a06,#08070400)",
       border:"1px solid #1c1810",boxShadow:"inset 0 1px 4px #000"}}>
       {odo.split("").map((d,i)=><Digit key={i} d={d}/>)}
@@ -1842,14 +1842,26 @@ export default function R6Dashboard(){
     const scene=new THREE.Scene();
     const bgC=document.createElement('canvas');bgC.width=bgC.height=512;
     const bx=bgC.getContext('2d');
-    bx.fillStyle='#080705';bx.fillRect(0,0,512,512);
-    const rg=bx.createRadialGradient(256,440,0,256,440,320);
-    rg.addColorStop(0,'rgba(52,42,28,0.85)');rg.addColorStop(0.35,'rgba(30,22,12,0.6)');
-    rg.addColorStop(0.7,'rgba(12,8,4,0.4)');rg.addColorStop(1,'rgba(0,0,0,0)');
-    bx.fillStyle=rg;bx.fillRect(0,0,512,512);
-    const tg=bx.createRadialGradient(256,0,0,256,0,380);
-    tg.addColorStop(0,'rgba(10,14,22,0.5)');tg.addColorStop(1,'rgba(0,0,0,0)');
-    bx.fillStyle=tg;bx.fillRect(0,0,512,512);
+    // base: near-black, faint cool wash up top (overhead studio cyclorama)
+    bx.fillStyle='#050505';bx.fillRect(0,0,512,512);
+    const topG=bx.createLinearGradient(0,0,0,512);
+    topG.addColorStop(0,'rgba(26,30,40,0.55)');topG.addColorStop(0.4,'rgba(10,11,15,0.2)');
+    topG.addColorStop(1,'rgba(0,0,0,0)');
+    bx.fillStyle=topG;bx.fillRect(0,0,512,512);
+    // spotlight pool: warm gold glow centered slightly low, where the bike sits
+    const pool=bx.createRadialGradient(256,300,10,256,320,300);
+    pool.addColorStop(0,'rgba(74,60,36,0.9)');pool.addColorStop(0.3,'rgba(44,34,18,0.6)');
+    pool.addColorStop(0.65,'rgba(16,11,5,0.35)');pool.addColorStop(1,'rgba(0,0,0,0)');
+    bx.fillStyle=pool;bx.fillRect(0,0,512,512);
+    // floor band — a brighter strip suggesting a reflective studio floor
+    const floor=bx.createLinearGradient(0,360,0,512);
+    floor.addColorStop(0,'rgba(0,0,0,0)');floor.addColorStop(0.5,'rgba(30,24,14,0.35)');
+    floor.addColorStop(1,'rgba(8,6,3,0.5)');
+    bx.fillStyle=floor;bx.fillRect(0,360,512,152);
+    // vignette: darken corners so the eye stays on the bike
+    const vig=bx.createRadialGradient(256,256,160,256,256,360);
+    vig.addColorStop(0,'rgba(0,0,0,0)');vig.addColorStop(1,'rgba(0,0,0,0.7)');
+    bx.fillStyle=vig;bx.fillRect(0,0,512,512);
     scene.background=new THREE.CanvasTexture(bgC);
 
     const cam=new THREE.PerspectiveCamera(40,W/H,0.01,100);
@@ -1879,6 +1891,38 @@ export default function R6Dashboard(){
     const shMat=new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(shC),transparent:true,depthWrite:false});
     const shadow=new THREE.Mesh(new THREE.PlaneGeometry(2.8,1.4),shMat);
     shadow.rotation.x=-Math.PI/2;scene.add(shadow);
+
+    // warm floor bounce — a faint gold disc the bike appears to sit in
+    const glowC=document.createElement('canvas');glowC.width=glowC.height=256;
+    const gx=glowC.getContext('2d');
+    const gg=gx.createRadialGradient(128,128,0,128,128,128);
+    gg.addColorStop(0,'rgba(150,120,60,0.4)');gg.addColorStop(0.5,'rgba(80,62,30,0.18)');
+    gg.addColorStop(1,'rgba(0,0,0,0)');
+    gx.fillStyle=gg;gx.fillRect(0,0,256,256);
+    const glowMat=new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(glowC),transparent:true,
+      depthWrite:false,blending:THREE.AdditiveBlending});
+    const floorGlow=new THREE.Mesh(new THREE.PlaneGeometry(3.6,2.0),glowMat);
+    floorGlow.rotation.x=-Math.PI/2;floorGlow.position.y=-0.002;scene.add(floorGlow);
+
+    /* Atmospheric dust — slow-drifting motes catch the warm key light.
+       Cheap (one BufferGeometry, additive points) and adds living air. */
+    const MOTE_N=46;
+    const motePos=new Float32Array(MOTE_N*3);
+    const moteSeed=[];
+    for(let i=0;i<MOTE_N;i++){
+      const x=(Math.random()-0.5)*3.4, y=(Math.random()-0.3)*2.2, z=(Math.random()-0.5)*3.0;
+      motePos[i*3]=x;motePos[i*3+1]=y;motePos[i*3+2]=z;
+      moteSeed.push({baseY:y,spd:0.02+Math.random()*0.05,amp:0.15+Math.random()*0.25,ph:Math.random()*6.28});
+    }
+    const moteGeo=new THREE.BufferGeometry();
+    moteGeo.setAttribute('position',new THREE.BufferAttribute(motePos,3));
+    const moteSprite=(()=>{const c=document.createElement('canvas');c.width=c.height=32;
+      const g=c.getContext('2d').createRadialGradient(16,16,0,16,16,16);
+      g.addColorStop(0,'rgba(255,240,210,0.9)');g.addColorStop(1,'rgba(255,240,210,0)');
+      const cx=c.getContext('2d');cx.fillStyle=g;cx.fillRect(0,0,32,32);return new THREE.CanvasTexture(c);})();
+    const moteMat=new THREE.PointsMaterial({map:moteSprite,size:0.05,transparent:true,
+      opacity:0.5,blending:THREE.AdditiveBlending,depthWrite:false,sizeAttenuation:true});
+    const motes=new THREE.Points(moteGeo,moteMat);scene.add(motes);
 
     const group=new THREE.Group();scene.add(group);
     const matBody=new THREE.MeshStandardMaterial({color:0x0a0a0e,metalness:0.25,roughness:0.3});
@@ -1940,9 +1984,19 @@ export default function R6Dashboard(){
     const radius=Math.max(size.x,size.y,size.z);
     let theta=Math.PI*0.18,phi=Math.PI*0.42,dist=radius*2.6;
     let thetaT=theta,phiT=phi,velT=0,velP=0;
+    // breathing sway (always-on) + reveal state
+    let breath=0;
+    const t0=performance.now();
+    const REVEAL_MS=1400;
     const updCam=()=>{
-      cam.position.set(dist*Math.sin(phi)*Math.cos(theta),dist*Math.cos(phi),dist*Math.sin(phi)*Math.sin(theta));
-      cam.lookAt(0,0,0);
+      // reveal eases distance + height; progresses 0→1 over REVEAL_MS
+      const rp=Math.min(1,(performance.now()-t0)/REVEAL_MS);
+      const ease=1-Math.pow(1-rp,3); // cubic ease-out
+      const dEff=dist*(1.5-0.5*ease);            // start 1.5× out, settle in
+      const phiEff=phi+(1-ease)*0.18+Math.sin(breath*0.6)*0.012; // higher at start, gentle bob
+      const thetaEff=theta+Math.sin(breath*0.45)*0.018;          // gentle horizontal sway
+      cam.position.set(dEff*Math.sin(phiEff)*Math.cos(thetaEff),dEff*Math.cos(phiEff),dEff*Math.sin(phiEff)*Math.sin(thetaEff));
+      cam.lookAt(0,0.02,0);
     };
     updCam();
 
@@ -1993,31 +2047,47 @@ export default function R6Dashboard(){
     const anim=()=>{
       rafRef.current=requestAnimationFrame(anim);
       if(!isHomeRef.current)return; // off HOME — skip render, save battery, loop stays alive
-      pulse+=0.04;
+      pulse+=0.04;breath+=0.016;
       const aid=activeIdRef.current;
       // showroom turntable: slow orbit after 6s without input, paused while a card is open
       if(!drag&&!aid&&Date.now()-lastTouch>6000)thetaT+=0.0016;
       if(!drag){velT*=DECAY;velP*=DECAY;thetaT+=velT;phiT=Math.max(0.12,Math.min(Math.PI-0.12,phiT+velP));}
       theta+=(thetaT-theta)*0.1;phi+=(phiT-phi)*0.1;updCam();
+      // drift the dust motes upward, wrap at the top
+      const mp=moteGeo.attributes.position.array;
+      for(let i=0;i<MOTE_N;i++){
+        const s=moteSeed[i];
+        mp[i*3+1]+=s.spd*0.016;
+        if(mp[i*3+1]>1.6)mp[i*3+1]=-1.0;
+        mp[i*3]+=Math.sin(breath*0.5+s.ph)*0.0008*s.amp;
+      }
+      moteGeo.attributes.position.needsUpdate=true;
+      // node reveal: stagger-fade rings/halos in over the first ~1.4s
+      const revP=Math.min(1,(performance.now()-t0)/REVEAL_MS);
       const sc=0.11+Math.sin(pulse)*0.012;
       const haloSc=0.27+Math.sin(pulse*0.7)*0.05;
       const haloA=0.24+Math.sin(pulse*0.85)*0.09;
-      spritesRef.current.forEach(({hh,ring,halo})=>{
+      spritesRef.current.forEach(({hh,ring,halo},idx)=>{
         if(!ring.visible)return;
+        // stagger: each node fades in slightly after the previous
+        const nodeStart=idx*0.045;
+        const rv=Math.max(0,Math.min(1,(revP-nodeStart)/0.3));
         const sel=aid===hh.id;
         if(ring.userData.mon&&!sel){
           ring.scale.set(0.08,0.08,0.08);
-          ring.material.opacity=aid?0.12:0.34;
+          ring.material.opacity=(aid?0.12:0.34)*rv;
           halo.scale.set(0.26,0.26,0.26);   // invisible, but still the tap target
           halo.material.opacity=0;
           return;
         }
         const k=sel?1.45:1;
         ring.scale.set(sc*k,sc*k,sc*k);
-        ring.material.opacity=sel?1:(aid?0.4:0.95);
+        ring.material.opacity=(sel?1:(aid?0.4:0.95))*rv;
         halo.scale.set(haloSc*k,haloSc*k,haloSc*k);
-        halo.material.opacity=sel?Math.min(0.55,haloA+0.22):(aid?0.08:haloA);
+        halo.material.opacity=(sel?Math.min(0.55,haloA+0.22):(aid?0.08:haloA))*rv;
       });
+      // fade the dust in with the reveal too
+      moteMat.opacity=0.5*revP;
       renderer.render(scene,cam);
     };
     anim();
@@ -2028,6 +2098,7 @@ export default function R6Dashboard(){
       el.removeEventListener('mousedown',down);el.removeEventListener('mousemove',move);
       el.removeEventListener('touchstart',down);el.removeEventListener('touchmove',move);el.removeEventListener('touchend',up);
       el.removeEventListener('wheel',onWheel);
+      moteGeo.dispose();moteMat.dispose();
       renderer.dispose();if(renderer.domElement.parentNode)mount.removeChild(renderer.domElement);};
   },[]);
 
@@ -2066,6 +2137,15 @@ export default function R6Dashboard(){
         details summary::-webkit-details-marker{display:none}
         @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.25}}
         @keyframes panelIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+        @keyframes lcdBreath{0%,100%{filter:brightness(1)}50%{filter:brightness(1.08)}}
+        .lcd-live{position:relative;animation:lcdBreath 3.2s ease-in-out infinite}
+        .lcd-live::after{content:"";position:absolute;inset:0;pointer-events:none;border-radius:4px;
+          background:linear-gradient(180deg,rgba(255,240,200,0.06) 0%,transparent 18%,transparent 82%,rgba(0,0,0,0.18) 100%);
+          mix-blend-mode:screen}
+        .lcd-live::before{content:"";position:absolute;left:0;right:0;height:30%;pointer-events:none;
+          background:linear-gradient(180deg,rgba(255,245,215,0.10),transparent);
+          animation:lcdScan 4.5s linear infinite;border-radius:4px}
+        @keyframes lcdScan{0%{transform:translateY(-30%);opacity:0}10%{opacity:1}90%{opacity:1}100%{transform:translateY(330%);opacity:0}}
         button:active{transform:translateY(1px)}
         @media (prefers-reduced-motion:reduce){*{animation-duration:.01ms !important;transition-duration:.01ms !important}}
       `}</style>
