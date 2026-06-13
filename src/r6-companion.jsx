@@ -710,28 +710,35 @@ function Dock({active,onChange,overdueCt,miles,readiness}){
   );
 
 
-  // Cluster indicator-light button
+  // Dash telltale button — recessed bezel + glowing lamp, like a real cluster
   const Btn=({t})=>{
     const on=active===t.id;
     const isHome=t.id==="home";
     const col=isHome?NEUTRAL_GREEN:GOLD;
-    // Home light glows green steadily (like a neutral indicator) whether or not it's the active tab
-    const litGreen=isHome;
-    const showCol=litGreen?NEUTRAL_GREEN:(on?col:"#15120e");
+    const lit=isHome||on;       // home lamp is always lit (neutral light)
+    const showCol=lit?col:"#1a1610";
     return(
-      <button onClick={()=>{buzz(6);onChange(t.id);}} style={{flex:1,display:"flex",flexDirection:"column",
-        alignItems:"center",justifyContent:"center",gap:5,background:"transparent",border:"none",
-        cursor:"pointer",position:"relative",padding:"6px 0"}}>
-        <span style={{
-          width:11,height:11,borderRadius:"50%",
-          background: litGreen?NEUTRAL_GREEN:(on?col:"#15120e"),
-          boxShadow: litGreen
-            ? `0 0 8px ${NEUTRAL_GREEN},0 0 16px ${NEUTRAL_GREEN}66, inset 0 0 3px #fff8`
-            : (on?`0 0 7px ${col},0 0 14px ${col}66, inset 0 0 3px #fff8`:"inset 0 1px 2px #000"),
-          border: litGreen?`1px solid ${NEUTRAL_GREEN}`:(on?`1px solid ${col}`:"1px solid #2e2920"),
-        }}/>
-        <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8.5,letterSpacing:2,
-          color:litGreen?NEUTRAL_GREEN:(on?col:"#5e584c")}}>{t.label}</span>
+      <button onClick={()=>{buzz(8);onChange(t.id);}} aria-label={t.label}
+        style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+        gap:7,background:"transparent",border:"none",cursor:"pointer",position:"relative",
+        padding:"14px 0 12px",minHeight:64,WebkitTapHighlightColor:"transparent"}}>
+        {/* recessed bezel housing the lamp */}
+        <span style={{position:"relative",width:30,height:30,borderRadius:"50%",
+          display:"flex",alignItems:"center",justifyContent:"center",
+          background:"radial-gradient(circle at 50% 35%, #14110d, #070605)",
+          boxShadow:`inset 0 1px 3px #000, inset 0 -1px 1px #221d15, 0 1px 0 #2a2520`,
+          border:"1px solid #16130e"}}>
+          {/* the lamp itself */}
+          <span style={{width:14,height:14,borderRadius:"50%",
+            background: lit?`radial-gradient(circle at 50% 35%, ${col}, ${col}cc 55%, ${col}88)`:"#15120e",
+            boxShadow: lit
+              ? `0 0 10px ${col}, 0 0 20px ${col}55, inset 0 0 3px #fff8`
+              : "inset 0 1px 2px #000",
+            border: lit?`1px solid ${col}`:"1px solid #2a2520",
+            transition:"all .18s ease"}}/>
+        </span>
+        <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:10,letterSpacing:3,fontWeight:on?700:400,
+          color:lit?col:"#6e6452",textShadow:lit?`0 0 8px ${col}55`:"none",transition:"color .18s"}}>{t.label}</span>
       </button>
     );
   };
@@ -743,7 +750,7 @@ function Dock({active,onChange,overdueCt,miles,readiness}){
       boxShadow:"inset 0 1px 0 #2a2520, inset 0 14px 30px -14px #000"}}>
 
       {/* Tach + odometer cluster zone */}
-      <div style={{position:"relative",height:136,overflow:"visible"}}>
+      <div style={{position:"relative",height:120,overflow:"visible"}}>
         {/* tach arc backdrop */}
         <div style={{position:"absolute",left:"50%",bottom:-20,transform:"translateX(-50%)",
           width:380,height:186,opacity:0.9,pointerEvents:"none"}}><Tach deg={needle} col={rdc}/></div>
@@ -772,8 +779,9 @@ function Dock({active,onChange,overdueCt,miles,readiness}){
       </div>
 
       {/* indicator-light nav row */}
-      <div style={{display:"flex",borderTop:"1px solid #141210",
-        background:"linear-gradient(180deg,#0a0908,#050403)"}}>
+      <div style={{display:"flex",borderTop:"1px solid #221d15",
+        background:"linear-gradient(180deg,#0c0a08,#050403)",
+        boxShadow:"inset 0 1px 0 #2a2520"}}>
         {tabs.map(t=><Btn key={t.id} t={t}/>)}
       </div>
     </div>
@@ -1850,29 +1858,59 @@ export default function R6Dashboard(){
     const mount=mountRef.current;
     const W=mount.clientWidth,H=mount.clientHeight;
     const scene=new THREE.Scene();
-    const bgC=document.createElement('canvas');bgC.width=bgC.height=512;
+    const BGS=1024;
+    const bgC=document.createElement('canvas');bgC.width=bgC.height=BGS;
     const bx=bgC.getContext('2d');
-    // base: near-black, faint cool wash up top (overhead studio cyclorama)
-    bx.fillStyle='#050505';bx.fillRect(0,0,512,512);
-    const topG=bx.createLinearGradient(0,0,0,512);
-    topG.addColorStop(0,'rgba(26,30,40,0.55)');topG.addColorStop(0.4,'rgba(10,11,15,0.2)');
-    topG.addColorStop(1,'rgba(0,0,0,0)');
-    bx.fillStyle=topG;bx.fillRect(0,0,512,512);
-    // spotlight pool: warm gold glow centered slightly low, where the bike sits
-    const pool=bx.createRadialGradient(256,300,10,256,320,300);
-    pool.addColorStop(0,'rgba(74,60,36,0.9)');pool.addColorStop(0.3,'rgba(44,34,18,0.6)');
-    pool.addColorStop(0.65,'rgba(16,11,5,0.35)');pool.addColorStop(1,'rgba(0,0,0,0)');
-    bx.fillStyle=pool;bx.fillRect(0,0,512,512);
-    // floor band — a brighter strip suggesting a reflective studio floor
-    const floor=bx.createLinearGradient(0,360,0,512);
-    floor.addColorStop(0,'rgba(0,0,0,0)');floor.addColorStop(0.5,'rgba(30,24,14,0.35)');
-    floor.addColorStop(1,'rgba(8,6,3,0.5)');
-    bx.fillStyle=floor;bx.fillRect(0,360,512,152);
-    // vignette: darken corners so the eye stays on the bike
-    const vig=bx.createRadialGradient(256,256,160,256,256,360);
-    vig.addColorStop(0,'rgba(0,0,0,0)');vig.addColorStop(1,'rgba(0,0,0,0.7)');
-    bx.fillStyle=vig;bx.fillRect(0,0,512,512);
-    scene.background=new THREE.CanvasTexture(bgC);
+    const S=BGS/512; // scale factor so coordinates stay readable
+    // helper: build a radial gradient with many interpolated stops for a
+    // perfectly smooth falloff (no visible rings). lerp between two rgba's.
+    const smoothRadial=(cx,cy,r0,r1,stops,steps=24)=>{
+      const g=bx.createRadialGradient(cx*S,cy*S,r0*S,cx*S,cy*S,r1*S);
+      for(let i=0;i<=steps;i++){
+        const t=i/steps;
+        // sample the piecewise color list with smoothstep easing
+        let a=stops[0],b=stops[stops.length-1];
+        for(let k=0;k<stops.length-1;k++){if(t>=stops[k].p&&t<=stops[k+1].p){a=stops[k];b=stops[k+1];break;}}
+        const lt=b.p===a.p?0:(t-a.p)/(b.p-a.p);
+        const e=lt*lt*(3-2*lt); // smoothstep
+        const c=a.c.map((v,j)=>Math.round(v+(b.c[j]-v)*e));
+        g.addColorStop(t,`rgba(${c[0]},${c[1]},${c[2]},${(c[3]/255).toFixed(3)})`);
+      }
+      return g;
+    };
+    bx.fillStyle='#050505';bx.fillRect(0,0,BGS,BGS);
+    // cool top wash
+    const topG=bx.createLinearGradient(0,0,0,BGS);
+    for(let i=0;i<=20;i++){const t=i/20;const e=t*t*(3-2*t);
+      const a=Math.round(140*(1-e));topG.addColorStop(t,`rgba(26,30,40,${(0.5*(1-e)).toFixed(3)})`);}
+    bx.fillStyle=topG;bx.fillRect(0,0,BGS,BGS);
+    // warm spotlight pool — smooth, generous falloff
+    bx.fillStyle=smoothRadial(256,300,8,320,[
+      {p:0,c:[78,62,38,235]},{p:0.4,c:[40,30,16,150]},{p:0.75,c:[14,10,5,70]},{p:1,c:[0,0,0,0]}],28);
+    bx.fillRect(0,0,BGS,BGS);
+    // soft floor band
+    const floor=bx.createLinearGradient(0,360*S,0,BGS);
+    for(let i=0;i<=16;i++){const t=i/16;const e=t*t*(3-2*t);
+      floor.addColorStop(t,`rgba(28,22,13,${(0.42*e).toFixed(3)})`);}
+    bx.fillStyle=floor;bx.fillRect(0,360*S,BGS,BGS-360*S);
+    // vignette
+    bx.fillStyle=smoothRadial(256,256,150,380,[
+      {p:0,c:[0,0,0,0]},{p:0.7,c:[0,0,0,90]},{p:1,c:[0,0,0,180]}],20);
+    bx.fillRect(0,0,BGS,BGS);
+    // NOISE DITHER — the key anti-banding step. A faint per-pixel jitter
+    // breaks up the 8-bit color steps that cause visible rings on dark fades.
+    const noise=bx.getImageData(0,0,BGS,BGS);
+    const nd=noise.data;
+    for(let i=0;i<nd.length;i+=4){
+      const j=(Math.random()*7|0)-3; // ±3 levels
+      nd[i]=Math.max(0,Math.min(255,nd[i]+j));
+      nd[i+1]=Math.max(0,Math.min(255,nd[i+1]+j));
+      nd[i+2]=Math.max(0,Math.min(255,nd[i+2]+j));
+    }
+    bx.putImageData(noise,0,0);
+    const bgTex=new THREE.CanvasTexture(bgC);
+    bgTex.minFilter=THREE.LinearFilter;bgTex.magFilter=THREE.LinearFilter;
+    scene.background=bgTex;
 
     const cam=new THREE.PerspectiveCamera(40,W/H,0.01,100);
     const renderer=new THREE.WebGLRenderer({antialias:true,alpha:false});
