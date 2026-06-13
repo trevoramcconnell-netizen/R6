@@ -505,6 +505,16 @@ function buildGeometry(p,bytes){
   g.setIndex(new THREE.BufferAttribute(idx,1));g.computeVertexNormals();return g;
 }
 
+/* Outside-tap dismiss for the node card. Mounts disarmed and arms on the
+   next frame, so the synthetic click fired by the touch that OPENED the card
+   (which lands ~300ms later) can't immediately close it. */
+function DismissLayer({onDismiss}){
+  const [armed,setArmed]=useState(false);
+  useEffect(()=>{const id=requestAnimationFrame(()=>requestAnimationFrame(()=>setArmed(true)));return()=>cancelAnimationFrame(id);},[]);
+  return <div onPointerDown={()=>{if(armed)onDismiss();}}
+    style={{position:"absolute",inset:0,zIndex:19}}/>;
+}
+
 /* ── sub-components ──
    Form inputs are hoisted to module scope on purpose: a component defined
    inside another component's render gets a new identity every render, so
@@ -2214,7 +2224,7 @@ export default function R6Dashboard(){
         </div>}
 
         {/* Node card */}
-        {active&&<div onClick={()=>setActive(null)} style={{position:"absolute",inset:0,zIndex:19}}/>}
+        {active&&<DismissLayer onDismiss={()=>setActive(null)}/>}
         {active&&<NodeCard h={active} liveTier={calcTier(active,miles,logEntries,settings)}
           onClose={()=>setActive(null)}
           onSwitchFix={()=>{setFixFocus(active.id);setTab("fix");setActive(null);}}/>}
