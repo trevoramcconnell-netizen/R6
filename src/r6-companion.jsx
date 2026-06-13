@@ -1869,6 +1869,7 @@ export default function R6Dashboard(){
     renderer.setSize(W,H);renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
     renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.05;
     mount.appendChild(renderer.domElement);
+    renderer.domElement.style.touchAction='none'; // prevent browser scroll-gesture consumption
 
     /* Procedural studio environment. Without an env map, the high-metalness
        wheels (0.94) and exhaust (0.96) have almost nothing to reflect and
@@ -2002,28 +2003,33 @@ export default function R6Dashboard(){
 
     const ray=new THREE.Raycaster();ray.params.Sprite={threshold:0.06};
     const ndc=new THREE.Vector2();
-    let drag=false,moved=false,px=0,py=0,ldx=0,ldy=0,pinch=0;
+    let drag=false,px=0,py=0,startX=0,startY=0,ldx=0,ldy=0,pinch=0;
     let lastTouch=Date.now(); // for the idle showroom auto-orbit
     const touchDist=(e)=>{const a=e.touches[0],b=e.touches[1];return Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);};
     const clampDist=(d)=>Math.max(radius*1.5,Math.min(radius*5,d));
+    const TAP_PX=14; // total displacement threshold — taps <14px, drags much more
     const down=(e)=>{
       lastTouch=Date.now();
-      if(e.touches&&e.touches.length===2){drag=false;moved=true;pinch=touchDist(e);return;}
-      drag=true;moved=false;velT=0;velP=0;const t=e.touches?e.touches[0]:e;px=t.clientX;py=t.clientY;};
+      if(e.touches&&e.touches.length===2){drag=false;pinch=touchDist(e);return;}
+      drag=true;velT=0;velP=0;const t=e.touches?e.touches[0]:e;
+      px=t.clientX;py=t.clientY;startX=px;startY=py;};
     const move=(e)=>{
       if(e.touches&&e.touches.length===2){ // pinch zoom
         const d=touchDist(e);
         if(pinch>0&&d>0){dist=clampDist(dist*(pinch/d));updCam();}
-        pinch=d;moved=true;return;}
+        pinch=d;return;}
       if(!drag)return;const t=e.touches?e.touches[0]:e;
       ldx=t.clientX-px;ldy=t.clientY-py;
-      if(Math.abs(ldx)+Math.abs(ldy)>4)moved=true;
       thetaT+=ldx*0.013;phiT=Math.max(0.12,Math.min(Math.PI-0.12,phiT-ldy*0.013));
       px=t.clientX;py=t.clientY;};
     const up=(e)=>{
       pinch=0;
-      if(drag&&moved){velT=ldx*0.007;velP=-ldy*0.007;}
-      drag=false;if(moved)return;
+      const totalDx=px-startX,totalDy=py-startY;
+      const wasDrag=Math.hypot(totalDx,totalDy)>TAP_PX;
+      if(drag&&wasDrag){velT=ldx*0.007;velP=-ldy*0.007;}
+      drag=false;if(wasDrag)return;
+      // ensure camera matrices are current for accurate raycasting
+      cam.updateMatrixWorld();
       const r=renderer.domElement.getBoundingClientRect();const t=e.changedTouches?e.changedTouches[0]:e;
       ndc.x=((t.clientX-r.left)/r.width)*2-1;ndc.y=-((t.clientY-r.top)/r.height)*2+1;
       ray.setFromCamera(ndc,cam);
