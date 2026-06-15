@@ -656,73 +656,93 @@ function NodeCard({h,liveTier,onClose,onSwitchFix}){
     </div>
   );
 }
-// Tach arc — instrument-cluster bezel, major/minor ticks, filled redline arc,
-// capped needle. Pure SVG, single render, no extra cost vs. the old version.
+// Tach — modeled on the real 2008 R6 cluster (image ref): white numerals on a
+// dark face, polished bezel ring, red redline segment near the top of the sweep,
+// thin white needle. The sweep is clipped to the dial so the needle never paints
+// over the dock border or the 3D scene above it.
 const Tach=({deg,col})=>{
-  const cx=150,cy=120,r=104, a0=215, a1=-35; // sweep angles (deg)
+  const cx=150,cy=128,r=104, a0=216, a1=-36; // sweep angles (deg) — wider, R6-like
   const pa=(d,rad=r)=>{const a=d*Math.PI/180;return [cx+Math.cos(a)*rad, cy-Math.sin(a)*rad];};
   const ang=t=>a0+(a1-a0)*t;
-  // ticks: majors every 1/9 (longer + labeled), minors at half-steps (short)
-  const majors=[],minors=[];
-  for(let i=0;i<=9;i++){
-    const a=ang(i/9)*Math.PI/180, hot=i>=8;
+  // R6 scale: numerals 2..16 (×1000 r/min). Redline begins ~15. We map the
+  // numbered majors across the sweep so it reads like the bike's own dial.
+  const NUMS=[2,4,6,8,10,12,14,16];
+  const majors=[],minors=[],labels=[];
+  const N=NUMS.length;
+  for(let i=0;i<N;i++){
+    const t=i/(N-1), a=ang(t)*Math.PI/180;
+    const redline=NUMS[i]>=15;
     const [x1,y1]=[cx+Math.cos(a)*r, cy-Math.sin(a)*r];
-    const [x2,y2]=[cx+Math.cos(a)*(r-13), cy-Math.sin(a)*(r-13)];
-    const [lx,ly]=[cx+Math.cos(a)*(r-26), cy-Math.sin(a)*(r-26)];
-    majors.push(<g key={"M"+i}>
-      <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={hot?GOLD_HI:"#5a5444"} strokeWidth={hot?2.6:1.9} strokeLinecap="round"/>
-      <text x={lx} y={ly+3} fontSize="9" textAnchor="middle" fill={hot?GOLD_HI:"#6e6452"}
-        fontFamily="'Share Tech Mono',monospace">{i}</text>
-    </g>);
-    if(i<9){const am=ang((i+0.5)/9)*Math.PI/180;
+    const [x2,y2]=[cx+Math.cos(a)*(r-11), cy-Math.sin(a)*(r-11)];
+    const [lx,ly]=[cx+Math.cos(a)*(r-24), cy-Math.sin(a)*(r-24)];
+    majors.push(<line key={"M"+i} x1={x1} y1={y1} x2={x2} y2={y2}
+      stroke={redline?"#e2473a":"#d8d2c4"} strokeWidth="2.2" strokeLinecap="round"/>);
+    labels.push(<text key={"L"+i} x={lx} y={ly+3.4} fontSize="10.5" textAnchor="middle"
+      fill={redline?"#e2473a":"#cfc9bb"} fontFamily="'Saira Condensed',sans-serif" fontWeight="600"
+      style={{letterSpacing:0}}>{NUMS[i]}</text>);
+    if(i<N-1){const am=ang((i+0.5)/(N-1))*Math.PI/180;
+      const rl=NUMS[i]>=14;
       minors.push(<line key={"m"+i} x1={cx+Math.cos(am)*r} y1={cy-Math.sin(am)*r}
-        x2={cx+Math.cos(am)*(r-7)} y2={cy-Math.sin(am)*(r-7)} stroke="#3a3428" strokeWidth="1"/>);}
+        x2={cx+Math.cos(am)*(r-6)} y2={cy-Math.sin(am)*(r-6)}
+        stroke={rl?"#9c3128":"#5a5650"} strokeWidth="1.2"/>);}
   }
   const [sx,sy]=pa(a0),[ex,ey]=pa(a1);
-  // filled redline wedge from tick 8 → end-stop, between two radii
-  const [r1o,r1oY]=pa(ang(8/9),r), [r2o,r2oY]=pa(ang(1),r);
-  const [r2i,r2iY]=pa(ang(1),r-13), [r1i,r1iY]=pa(ang(8/9),r-13);
-  const redArc=`M ${r1o} ${r1oY} A ${r} ${r} 0 0 1 ${r2o} ${r2oY} L ${r2i} ${r2iY} A ${r-13} ${r-13} 0 0 0 ${r1i} ${r1iY} Z`;
+  // red redline arc band hugging the rim, from "15" to the end-stop
+  const tRed=(15-NUMS[0])/(NUMS[N-1]-NUMS[0]);
+  const [rro,rroY]=pa(ang(tRed),r+1), [reo,reoY]=pa(ang(1),r+1);
+  const [rei,reiY]=pa(ang(1),r-4), [rri,rriY]=pa(ang(tRed),r-4);
+  const redArc=`M ${rro} ${rroY} A ${r+1} ${r+1} 0 0 1 ${reo} ${reoY} L ${rei} ${reiY} A ${r-4} ${r-4} 0 0 0 ${rri} ${rriY} Z`;
+  // needle stays well inside the rim (tip at r-30) so it can't escape the face
+  const needleTip=r-30;
   return(
-    <svg viewBox="0 0 300 132" style={{width:"100%",height:"100%",display:"block"}}>
+    <svg viewBox="0 0 300 150" style={{width:"100%",height:"100%",display:"block"}}>
       <defs>
-        <radialGradient id="tachFace" cx="50%" cy="62%" r="62%">
-          <stop offset="0%" stopColor="#15130f"/><stop offset="70%" stopColor="#0c0a08"/>
+        <radialGradient id="tachFace" cx="50%" cy="78%" r="70%">
+          <stop offset="0%" stopColor="#1a1814"/><stop offset="65%" stopColor="#0e0c0a"/>
           <stop offset="100%" stopColor="#070605"/>
         </radialGradient>
-        <linearGradient id="tachBezel" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#332b1d"/><stop offset="50%" stopColor="#16130d"/>
-          <stop offset="100%" stopColor="#0a0806"/>
+        <linearGradient id="tachRing" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#5a564e"/><stop offset="45%" stopColor="#26241f"/>
+          <stop offset="55%" stopColor="#1a1814"/><stop offset="100%" stopColor="#3a3630"/>
         </linearGradient>
-        <radialGradient id="redGrad" cx="50%" cy="50%" r="50%">
-          <stop offset="0%" stopColor="#e6c878"/><stop offset="100%" stopColor="#b53026"/>
-        </radialGradient>
+        <clipPath id="tachClip">
+          {/* clip to the dial disc so the needle/sweep never paints outside it */}
+          <path d={`M ${sx} ${sy} A ${r+4} ${r+4} 0 0 1 ${ex} ${ey} L ${cx} ${cy+18} Z`}/>
+        </clipPath>
       </defs>
-      {/* dial face — brushed-dark disc behind the arc */}
-      <path d={`M ${sx} ${sy} A ${r} ${r} 0 0 1 ${ex} ${ey} L ${cx} ${cy} Z`} fill="url(#tachFace)"/>
-      {/* outer bezel ring + inner shadow lip */}
-      <path d={`M ${sx} ${sy} A ${r} ${r} 0 0 1 ${ex} ${ey}`} fill="none" stroke="url(#tachBezel)" strokeWidth="5"/>
-      <path d={`M ${sx} ${sy} A ${r} ${r} 0 0 1 ${ex} ${ey}`} fill="none" stroke="#000" strokeWidth="1.4" strokeOpacity="0.5"
-        style={{filter:"blur(0.6px)"}}/>
-      <path d={redArc} fill="url(#redGrad)" opacity="0.92"/>
-      {minors}{majors}
-      <g style={{transformBox:"view-box",transformOrigin:"150px 120px",
-        transform:`rotate(${deg}deg)`,transition:"transform 1.1s cubic-bezier(.34,1.32,.5,1)"}}>
-        <line x1={cx} y1={cy+14} x2={cx} y2={cy-(r-20)} stroke={col} strokeWidth="2.6"
-          strokeLinecap="round" style={{filter:`drop-shadow(0 0 4px ${col}aa)`}}/>
+      <g clipPath="url(#tachClip)">
+        {/* dial face */}
+        <path d={`M ${sx} ${sy} A ${r} ${r} 0 0 1 ${ex} ${ey} L ${cx} ${cy} Z`} fill="url(#tachFace)"/>
+        <path d={redArc} fill="#c4231b" opacity="0.95"/>
+        {minors}{majors}{labels}
+        {/* x1000 r/min label, like the bike */}
+        <text x={cx} y={cy-30} fontSize="7.5" textAnchor="middle" fill="#6e6a60"
+          fontFamily="'Share Tech Mono',monospace" style={{letterSpacing:1}}>×1000 r/min</text>
+        {/* needle */}
+        <g style={{transformBox:"view-box",transformOrigin:`${cx}px ${cy}px`,
+          transform:`rotate(${deg}deg)`,transition:"transform 1.1s cubic-bezier(.34,1.28,.5,1)"}}>
+          <line x1={cx} y1={cy+12} x2={cx} y2={cy-needleTip} stroke="#e8e4d8" strokeWidth="2.4"
+            strokeLinecap="round" style={{filter:`drop-shadow(0 0 3px ${col}88)`}}/>
+          <line x1={cx} y1={cy+12} x2={cx} y2={cy-needleTip} stroke={col} strokeWidth="0.9"
+            strokeLinecap="round" opacity="0.5"/>
+        </g>
       </g>
-      {/* needle cap — layered hub with specular highlight */}
-      <circle cx={cx} cy={cy} r="8" fill="#0a0806" stroke="#332b1d" strokeWidth="1"/>
-      <circle cx={cx} cy={cy} r="4.5" fill="#1c1812" stroke={col} strokeWidth="1" strokeOpacity="0.5"/>
-      <circle cx={cx-1.4} cy={cy-1.4} r="1.3" fill="#cfc4a8" opacity="0.8"/>
+      {/* polished bezel ring — drawn over the clip so it frames the face */}
+      <path d={`M ${sx} ${sy} A ${r+3} ${r+3} 0 0 1 ${ex} ${ey}`} fill="none" stroke="url(#tachRing)" strokeWidth="4.5"/>
+      <path d={`M ${sx} ${sy} A ${r} ${r} 0 0 1 ${ex} ${ey}`} fill="none" stroke="#000" strokeWidth="1" strokeOpacity="0.6"/>
+      {/* needle hub */}
+      <circle cx={cx} cy={cy} r="7.5" fill="#0c0a08" stroke="#4a463e" strokeWidth="1"/>
+      <circle cx={cx} cy={cy} r="4" fill="#161310"/>
+      <circle cx={cx-1.3} cy={cy-1.3} r="1.2" fill="#d8d2c4" opacity="0.85"/>
     </svg>
   );
 };
 function Dock({active,onChange,overdueCt,miles,readiness}){
   /* Needle does the classic key-on sweep, then parks at READINESS:
-     resting at idle = healthy, buried toward redline = the bike needs work.
-     The decorative needle now carries the app's single most useful number. */
-  const IDLE_DEG=-94,MAX_DEG=58;
+     resting low (toward "2") = healthy, buried toward redline = needs work.
+     Range matches the new dial geometry (216°→-36° sweep). At rotate(0) the
+     needle points straight up; -126° aims it at the low end, +18° toward redline. */
+  const IDLE_DEG=-122,MAX_DEG=20;
   const rd=readiness??100;
   const targetDeg=IDLE_DEG+(1-rd/100)*(MAX_DEG-IDLE_DEG);
   const tRef=useRef(targetDeg);tRef.current=targetDeg;
@@ -820,18 +840,28 @@ function Dock({active,onChange,overdueCt,miles,readiness}){
   return(
     <div style={{position:"absolute",bottom:0,left:0,right:0,zIndex:25,
       background:"radial-gradient(120% 140% at 50% 100%, #0e0c0a 0%, #070605 60%, #050403 100%)",
-      borderTop:"1px solid #1e1c18",
-      boxShadow:"inset 0 1px 0 #2a2520, inset 0 14px 30px -14px #000"}}>
+      filter:"drop-shadow(0 -8px 24px rgba(0,0,0,0.7))"}}>
 
-      {/* Tach + odometer cluster zone */}
-      <div style={{position:"relative",height:120,overflow:"hidden"}}>
-        {/* tach arc backdrop — sized and positioned to sit fully inside the cluster,
-            no longer bleeding over the top border of the dock */}
-        <div style={{position:"absolute",left:"50%",bottom:-6,transform:"translateX(-50%)",
-          width:340,height:166,opacity:0.9,pointerEvents:"none"}}><Tach deg={needle} col={rdc}/></div>
+      {/* Binnacle hood — an SVG top edge that arcs up and over the dial instead
+          of slicing the tach's upper arc flat. The cluster sits in front of it. */}
+      <svg viewBox="0 0 100 18" preserveAspectRatio="none"
+        style={{position:"absolute",top:-17,left:0,width:"100%",height:18,display:"block"}}>
+        {/* fill matches the dock so the hood reads as one continuous binnacle */}
+        <path d="M0 18 L0 14 Q50 -10 100 14 L100 18 Z" fill="#0b0908"/>
+        <path d="M0 14 Q50 -10 100 14" fill="none" stroke="#332b1d" strokeWidth="0.5"
+          vectorEffect="non-scaling-stroke" opacity="0.9"/>
+      </svg>
 
-        {/* odometer centered in the arc */}
-        <div style={{position:"absolute",left:0,right:0,bottom:22,display:"flex",
+      {/* Tach + odometer cluster zone. Height now fits the full dial; the dome
+          mask (radial transparent→opaque at the corners) lets the dial's top arc
+          breathe into the arched hood rather than being cut by a straight edge. */}
+      <div style={{position:"relative",height:150,overflow:"hidden"}}>
+        {/* tach: viewBox 300×150; box sized to show the entire dial, hub low */}
+        <div style={{position:"absolute",left:"50%",bottom:-2,transform:"translateX(-50%)",
+          width:344,height:172,pointerEvents:"none"}}><Tach deg={needle} col={rdc}/></div>
+
+        {/* odometer centered in the lower arc, clear of the needle hub */}
+        <div style={{position:"absolute",left:0,right:0,bottom:16,display:"flex",
           flexDirection:"column",alignItems:"center",gap:3,pointerEvents:"none"}}>
           <div onClick={()=>onChange("set")} role="button" aria-label="Update mileage"
             title="Tap to update mileage" style={{pointerEvents:"auto",cursor:"pointer"}}><Lcd/></div>
@@ -842,14 +872,8 @@ function Dock({active,onChange,overdueCt,miles,readiness}){
           </div>
           <div style={{display:"flex",alignItems:"center",gap:5}}>
             <span style={{width:4,height:4,borderRadius:"50%",background:rdc,flexShrink:0}}/>
-            <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,letterSpacing:1,color:rdc,opacity:0.9}}>{rd}%</span>
+            <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,letterSpacing:1,color:rdc,opacity:0.9}}>{rd}% READY</span>
           </div>
-        </div>
-
-        {/* model label, mimics tach face */}
-        <div style={{position:"absolute",top:34,left:"50%",transform:"translateX(-50%)",
-          fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:"#766c58",letterSpacing:4,pointerEvents:"none"}}>
-          R6
         </div>
       </div>
 
@@ -2196,10 +2220,12 @@ export default function R6Dashboard(){
     bx.fillRect(0,0,BGS,BGS);
     // NOISE DITHER — the key anti-banding step. A faint per-pixel jitter
     // breaks up the 8-bit color steps that cause visible rings on dark fades.
+    // Amplitude raised to ±5: on near-black gradients the steps are wide, so
+    // a stronger dither is what actually dissolves the "MS Paint" banding.
     const noise=bx.getImageData(0,0,BGS,BGS);
     const nd=noise.data;
     for(let i=0;i<nd.length;i+=4){
-      const j=(Math.random()*7|0)-3; // ±3 levels
+      const j=(Math.random()*11|0)-5; // ±5 levels
       nd[i]=Math.max(0,Math.min(255,nd[i]+j));
       nd[i+1]=Math.max(0,Math.min(255,nd[i+1]+j));
       nd[i+2]=Math.max(0,Math.min(255,nd[i+2]+j));
@@ -2242,17 +2268,19 @@ export default function R6Dashboard(){
     const shadow=new THREE.Mesh(new THREE.PlaneGeometry(2.8,1.4),shMat);
     shadow.rotation.x=-Math.PI/2;scene.add(shadow);
 
-    // warm floor bounce — a faint gold disc the bike appears to sit in
+    // warm floor bounce — a faint gold disc the bike appears to sit in.
+    // Kept small, low-opacity, and pressed to the floor so from the high camera
+    // it reads as a contact bounce, not a second glow blooming over the tank.
     const glowC=document.createElement('canvas');glowC.width=glowC.height=256;
     const gx=glowC.getContext('2d');
     const gg=gx.createRadialGradient(128,128,0,128,128,128);
-    gg.addColorStop(0,'rgba(150,120,60,0.4)');gg.addColorStop(0.5,'rgba(80,62,30,0.18)');
+    gg.addColorStop(0,'rgba(150,120,60,0.22)');gg.addColorStop(0.45,'rgba(80,62,30,0.09)');
     gg.addColorStop(1,'rgba(0,0,0,0)');
     gx.fillStyle=gg;gx.fillRect(0,0,256,256);
     const glowMat=new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(glowC),transparent:true,
       depthWrite:false,blending:THREE.AdditiveBlending});
-    const floorGlow=new THREE.Mesh(new THREE.PlaneGeometry(3.6,2.0),glowMat);
-    floorGlow.rotation.x=-Math.PI/2;floorGlow.position.y=-0.002;scene.add(floorGlow);
+    const floorGlow=new THREE.Mesh(new THREE.PlaneGeometry(2.6,1.5),glowMat);
+    floorGlow.rotation.x=-Math.PI/2;floorGlow.position.y=-0.02;floorGlow.position.z=0.1;scene.add(floorGlow);
 
     /* Atmospheric dust — slow-drifting motes catch the warm key light.
        Cheap (one BufferGeometry, additive points) and adds living air. */
@@ -2306,11 +2334,14 @@ export default function R6Dashboard(){
 
     const mkRingTex=(sz=128)=>{
       const c=document.createElement('canvas');c.width=c.height=sz;const x=c.getContext('2d');
-      const g=x.createRadialGradient(sz/2,sz/2,0,sz/2,sz/2,sz/2);
-      g.addColorStop(0,'rgba(255,255,255,0.5)');g.addColorStop(0.3,'rgba(255,255,255,0.18)');g.addColorStop(1,'rgba(255,255,255,0)');
+      // tight inner glow only — no broad fill (a broad fill becomes a visible
+      // square once the sprite is additively blended). Falloff is fully transparent
+      // well before the quad edge so the corners contribute nothing.
+      const g=x.createRadialGradient(sz/2,sz/2,sz*0.06,sz/2,sz/2,sz*0.42);
+      g.addColorStop(0,'rgba(255,255,255,0.32)');g.addColorStop(0.55,'rgba(255,255,255,0.06)');g.addColorStop(1,'rgba(255,255,255,0)');
       x.fillStyle=g;x.fillRect(0,0,sz,sz);
-      x.beginPath();x.arc(sz/2,sz/2,sz*0.32,0,7);x.lineWidth=sz*0.09;x.strokeStyle='rgba(255,255,255,0.95)';x.stroke();
-      x.beginPath();x.arc(sz/2,sz/2,sz*0.1,0,7);x.fillStyle='#fff';x.fill();
+      x.beginPath();x.arc(sz/2,sz/2,sz*0.32,0,7);x.lineWidth=sz*0.085;x.strokeStyle='rgba(255,255,255,0.98)';x.stroke();
+      x.beginPath();x.arc(sz/2,sz/2,sz*0.095,0,7);x.fillStyle='#fff';x.fill();
       return new THREE.CanvasTexture(c);
     };
     const ringTex=mkRingTex(128);
@@ -2321,10 +2352,13 @@ export default function R6Dashboard(){
       const anchor=resolveAnchor(hh);
       anchor.z+=NUDGE;
       const col=new THREE.Color(TIER_C[hh.tier]||ASH);
-      const haloMat=new THREE.SpriteMaterial({map:ringTex,color:col,transparent:true,opacity:0.28,blending:THREE.AdditiveBlending,depthTest:true});
+      const haloMat=new THREE.SpriteMaterial({map:ringTex,color:col,transparent:true,opacity:0.28,blending:THREE.AdditiveBlending,depthTest:true,depthWrite:false});
       const halo=new THREE.Sprite(haloMat);halo.scale.set(0.26,0.26,0.26);halo.position.copy(anchor);
       halo.userData=hh;group.add(halo);
-      const ringMat=new THREE.SpriteMaterial({map:ringTex,color:col,transparent:true,opacity:0.95,depthTest:true});
+      // Ring also additive + depthWrite off. Normal blending with depthTest made
+      // the sprite quad's transparent corners sort against the bike mesh and show
+      // up as a dark box behind each node — additive blends those corners to zero.
+      const ringMat=new THREE.SpriteMaterial({map:ringTex,color:col,transparent:true,opacity:0.95,blending:THREE.AdditiveBlending,depthTest:true,depthWrite:false});
       const ring=new THREE.Sprite(ringMat);ring.scale.set(0.11,0.11,0.11);ring.position.copy(anchor);
       ring.userData=hh;group.add(ring);
       pairs.push({hh,ring,halo});
@@ -2519,7 +2553,7 @@ export default function R6Dashboard(){
 
         {/* Decepticon badge — lifted clear of the tach cluster so the needle sweep
             and redline arc never paint over it */}
-        <div style={{position:"absolute",bottom:236,right:16,zIndex:7,pointerEvents:"none"}}>
+        <div style={{position:"absolute",bottom:268,right:16,zIndex:7,pointerEvents:"none"}}>
           <img alt="" src={"data:image/png;base64,"+DECAL_B64}
             style={{height:26,opacity:0.4,filter:"drop-shadow(0 0 6px rgba(197,162,75,0.4))"}}/>
         </div>
@@ -2543,7 +2577,7 @@ export default function R6Dashboard(){
         })()}
 
         {/* All-clear state */}
-        {!anyVisible&&!active&&<div style={{position:"absolute",bottom:186,left:0,right:0,
+        {!anyVisible&&!active&&<div style={{position:"absolute",bottom:218,left:0,right:0,
           display:"flex",flexDirection:"column",alignItems:"center",gap:4,pointerEvents:"none"}}>
           <div style={{width:6,height:6,borderRadius:"50%",background:TEAL,boxShadow:`0 0 10px ${TEAL}`}}/>
           <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:TEAL,letterSpacing:2,opacity:0.6}}>
@@ -2552,7 +2586,7 @@ export default function R6Dashboard(){
         </div>}
 
         {/* Legend */}
-        {!active&&anyVisible&&<div style={{position:"absolute",left:14,bottom:186,zIndex:5,display:"flex",flexDirection:"column",gap:4}}>
+        {!active&&anyVisible&&<div style={{position:"absolute",left:14,bottom:218,zIndex:5,display:"flex",flexDirection:"column",gap:4}}>
           {[["OVERDUE",BRAKE],["DUE NOW",BRONZE],["COMING UP",GOLD],["MONITORED",ASH],
             ...(settings&&settings.nextTrackDay?[["TRACK PREP",GOLD_HI]]:[])]
             .map(([l,c])=>(
