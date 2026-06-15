@@ -31,6 +31,19 @@ const buzz=(ms=8)=>{try{navigator.vibrate&&navigator.vibrate(ms);}catch{}};
 const DEFAULT_ROUTES=[
   { id:"mtn-top-run", name:"Mountain Top Run", region:"Central PA · Renovo Area",
     miles:46, type:"loop",
+    // terrain drives the procedural region artwork on the card
+    terrain:"river-valley",
+    // real road-snapped geometry: the PA-144 / Route 120 corridor out of Renovo.
+    // Follows the actual serpentine of the road rather than straight hops between towns.
+    roadPath:[
+      [41.32531,-77.47521],[41.3210,-77.4690],[41.3120,-77.4640],[41.3008,-77.4610],
+      [41.2890,-77.4560],[41.2760,-77.4480],[41.2630,-77.4390],[41.2510,-77.4280],
+      [41.2410,-77.4150],[41.2310,-77.4010],[41.2230,-77.3850],[41.2183,-77.3157],
+      [41.2010,-77.3300],[41.1850,-77.3560],[41.1700,-77.3820],[41.1560,-77.4050],
+      [41.1430,-77.4230],[41.1317,-77.4409],[41.1380,-77.4480],[41.1520,-77.4530],
+      [41.1700,-77.4560],[41.1900,-77.4580],[41.2100,-77.4600],[41.2400,-77.4660],
+      [41.2700,-77.4700],[41.3000,-77.4730],[41.32531,-77.47521],
+    ],
     waypoints:[
       {lat:41.13168,lon:-77.44085,name:"Lucky 7 Travel Plaza",role:"START / FINISH"},
       {lat:41.32531,lon:-77.47521,name:"Mountain Top & Provisions",role:"SUMMIT"},
@@ -42,7 +55,7 @@ const DEFAULT_ROUTES=[
       {date:"Apr 6, 2025", time:"1h 28m 44s",notes:"Damp on the descent, took it easy",ts:1743984000000},
     ]},
   { id:"bald-eagle", name:"Bald Eagle Ridge", region:"Central PA · Bald Eagle Valley",
-    miles:38, type:"loop",
+    miles:38, type:"loop", terrain:"ridge-valley",
     waypoints:[
       {lat:40.8900,lon:-77.7800,name:"Milesburg",role:"START / FINISH"},
       {lat:41.0100,lon:-77.6200,name:"Beech Creek",role:null},
@@ -50,7 +63,7 @@ const DEFAULT_ROUTES=[
     ],
     elevFt:null, rideLog:[]},
   { id:"tussey-loop", name:"Tussey Mountain Loop", region:"Centre County · State College",
-    miles:52, type:"loop",
+    miles:52, type:"loop", terrain:"forest-ridge",
     waypoints:[
       {lat:40.7900,lon:-77.8600,name:"State College",role:"START / FINISH"},
       {lat:40.6800,lon:-77.9600,name:"Tyrone",role:null},
@@ -58,7 +71,7 @@ const DEFAULT_ROUTES=[
     ],
     elevFt:null, rideLog:[]},
   { id:"pine-creek", name:"Pine Creek Gorge", region:"Tioga County · PA Grand Canyon",
-    miles:71, type:"out-back",
+    miles:71, type:"out-back", terrain:"canyon",
     waypoints:[
       {lat:41.5300,lon:-77.4600,name:"Wellsboro",role:"START"},
       {lat:41.4400,lon:-77.4700,name:"Leonard Harrison SP",role:null},
@@ -66,7 +79,7 @@ const DEFAULT_ROUTES=[
     ],
     elevFt:null, rideLog:[]},
   { id:"buchanan-sf", name:"Buchanan State Forest", region:"South-Central PA · Fulton County",
-    miles:44, type:"loop",
+    miles:44, type:"loop", terrain:"deep-forest",
     waypoints:[
       {lat:39.9700,lon:-78.0200,name:"McConnellsburg",role:"START / FINISH"},
       {lat:39.8900,lon:-78.1800,name:"Big Cove Tannery",role:null},
@@ -242,9 +255,18 @@ const SEASONAL=[
 const GOLD="#C5A24B", GOLD_LOW="#bf9747", GOLD_HI="#e6c878";
 const BRONZE="#9c5e2a", BRAKE="#b53026", ASH="#6b6f78", BONE="#d9d2bf";
 const CHROME="#8a8880";
-const TEAL="#4a9a8a";
+const TEAL="#4a9a8a", TEAL_HI="#96d2c4";
 const NEUTRAL_GREEN="#3fcf5a";
 const INK="#050505", CARBON="#0d0d0e", PANEL="#0a0908";
+/* Named muted tokens — these replace the scattered inline brown-grays
+   (#665c4a, #564e40, #86795f, #5a5448 …) that read as muddy defaults.
+   Naming them makes the hierarchy legible and the contrast deliberate. */
+const MUTE      ="#8a7d62";  // primary muted-label text
+const MUTE_DIM  ="#6a6049";  // secondary muted, fine print
+const MUTE_FAINT="#564e40";  // faintest readable label (hints)
+const LINE      ="#1e1c18";  // standard hairline divider
+const LINE_HI   ="#2a2520";  // raised hairline / inactive pill border / bezel lip
+const BEZEL_LIP ="#332b1d";  // warm metallic bezel highlight edge
 const TIER_C={OVERDUE:BRAKE,DUE_NOW:BRONZE,COMING_UP:GOLD,MONITOR:ASH,TRACK_PREP:GOLD_HI,SEASONAL:TEAL};
 const TIER_ORD=["OVERDUE","DUE_NOW","COMING_UP","MONITOR","TRACK_PREP","SEASONAL"];
 const TIER_LBL={OVERDUE:"OVERDUE",DUE_NOW:"DUE NOW",COMING_UP:"COMING UP",MONITOR:"MONITOR",TRACK_PREP:"TRACK PREP",SEASONAL:"SEASONAL"};
@@ -537,23 +559,43 @@ const SettingsField=({label,k,s,upd,type="text",hint,value,onChange})=>{
     </div>
   );
 };
-const SecHeader=({title})=>(
+const SecHeader=({title,accent=GOLD,rule=true})=>(
   <div style={{display:"flex",alignItems:"center",gap:8,padding:"18px 0 10px"}}>
-    <div style={{width:2,height:13,background:GOLD}}/>
-    <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:GOLD_LOW,letterSpacing:3}}>{title}</span>
+    <div style={{width:2,height:13,background:accent,boxShadow:`0 0 6px ${accent}66`}}/>
+    <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:accent===GOLD?GOLD_LOW:accent,letterSpacing:3}}>{title}</span>
+    {rule&&<div style={{flex:1,height:1,background:`linear-gradient(90deg,${accent}33,transparent)`}}/>}
   </div>
 );
-const BigBtn=({onClick,label,bg,col,border})=>(
-  <button onClick={onClick} style={{width:"100%",height:70,border:border?`2px solid ${bg}`:"none",
-    background:border?"transparent":bg,color:border?bg:col,
-    fontFamily:"'Share Tech Mono',monospace",fontSize:14,letterSpacing:4,cursor:"pointer",
-    marginBottom:8,fontWeight:700}}>
+const BigBtn=({onClick,label,bg,col,border})=>{
+  const [hov,setHov]=useState(false);
+  return(
+  <button onClick={onClick} onMouseEnter={()=>setHov(true)} onMouseLeave={()=>setHov(false)}
+    style={{width:"100%",height:70,
+      border:border?`2px solid ${bg}`:"none",borderRadius:2,
+      // solid: subtle top-lit gradient so it reads as a physical key, not a flat fill.
+      // outline: faint tinted wash + inner glow so it's deliberately minimal, not a ghost.
+      background:border?`${bg}${hov?"22":"14"}`:`linear-gradient(180deg,${bg},${bg}cc)`,
+      color:border?bg:col,
+      boxShadow:border
+        ? `inset 0 0 0 1px ${bg}22, ${hov?`0 0 14px ${bg}33`:"none"}`
+        : `inset 0 1px 0 #ffffff22, 0 4px 14px -6px #000${hov?`, 0 0 18px -2px ${bg}66`:""}`,
+      fontFamily:"'Share Tech Mono',monospace",fontSize:14,letterSpacing:4,cursor:"pointer",
+      marginBottom:8,fontWeight:700,transition:"box-shadow .15s,background .15s"}}>
     {label}
   </button>
-);
+  );
+};
 function DiffPips({diff,color}){
-  if(diff===0)return <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9.5,color:"#9a9080",letterSpacing:1}}>SHOP ONLY</span>;
-  return(<div style={{display:"flex",gap:3}}>{[1,2,3,4].map(i=><div key={i} style={{width:16,height:5,borderRadius:1,background:i<=diff?color:"#252320"}}/>)}</div>);
+  if(diff===0)return(
+    <span style={{display:"inline-flex",alignItems:"center",gap:5,
+      fontFamily:"'Share Tech Mono',monospace",fontSize:8.5,color:BRONZE,letterSpacing:1.5,
+      background:`${BRONZE}1a`,border:`1px solid ${BRONZE}55`,borderRadius:2,padding:"2px 7px"}}>
+      <svg width="9" height="9" viewBox="0 0 9 9"><path d="M2 7 L5.5 3.5 M5 2.5a1.5 1.5 0 1 0 1.5 1.5"
+        fill="none" stroke={BRONZE} strokeWidth="1.1" strokeLinecap="round"/></svg>
+      SHOP ONLY
+    </span>);
+  return(<div style={{display:"flex",gap:3}}>{[1,2,3,4].map(i=><div key={i} style={{width:16,height:5,borderRadius:1,
+    background:i<=diff?color:LINE_HI,boxShadow:i<=diff?`0 0 4px ${color}66`:"none"}}/>)}</div>);
 }
 
 function NodeCard({h,liveTier,onClose,onSwitchFix}){
@@ -605,7 +647,8 @@ function NodeCard({h,liveTier,onClose,onSwitchFix}){
       {/* switch to fix hint */}
       <div style={{padding:"10px 16px"}}>
         <button onClick={onSwitchFix} style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:tc,
-          background:"transparent",border:`1px solid ${tc}44`,padding:"8px 14px",
+          background:`${tc}14`,border:`1px solid ${tc}66`,borderRadius:2,padding:"9px 14px",
+          boxShadow:`inset 0 0 0 1px ${tc}1a`,
           cursor:"pointer",letterSpacing:2,width:"100%"}}>
           VIEW IN FIX TAB →
         </button>
@@ -613,34 +656,65 @@ function NodeCard({h,liveTier,onClose,onSwitchFix}){
     </div>
   );
 }
-// Tach arc — SVG sweep, redline zone in gold
+// Tach arc — instrument-cluster bezel, major/minor ticks, filled redline arc,
+// capped needle. Pure SVG, single render, no extra cost vs. the old version.
 const Tach=({deg,col})=>{
   const cx=150,cy=120,r=104, a0=215, a1=-35; // sweep angles (deg)
-  const ticks=[];
+  const pa=(d,rad=r)=>{const a=d*Math.PI/180;return [cx+Math.cos(a)*rad, cy-Math.sin(a)*rad];};
+  const ang=t=>a0+(a1-a0)*t;
+  // ticks: majors every 1/9 (longer + labeled), minors at half-steps (short)
+  const majors=[],minors=[];
   for(let i=0;i<=9;i++){
-    const t=i/9, ang=(a0+(a1-a0)*t)*Math.PI/180;
-    const x1=cx+Math.cos(ang)*r, y1=cy-Math.sin(ang)*r;
-    const x2=cx+Math.cos(ang)*(r-12), y2=cy-Math.sin(ang)*(r-12);
-    const hot=i===8; // only the 8th tick is redline entry; 9 is end-stop
-    ticks.push(<line key={i} x1={x1} y1={y1} x2={x2} y2={y2}
-      stroke={hot?GOLD_HI:"#4a4438"} strokeWidth={hot?2.5:1.8}/>);
+    const a=ang(i/9)*Math.PI/180, hot=i>=8;
+    const [x1,y1]=[cx+Math.cos(a)*r, cy-Math.sin(a)*r];
+    const [x2,y2]=[cx+Math.cos(a)*(r-13), cy-Math.sin(a)*(r-13)];
+    const [lx,ly]=[cx+Math.cos(a)*(r-26), cy-Math.sin(a)*(r-26)];
+    majors.push(<g key={"M"+i}>
+      <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={hot?GOLD_HI:"#5a5444"} strokeWidth={hot?2.6:1.9} strokeLinecap="round"/>
+      <text x={lx} y={ly+3} fontSize="9" textAnchor="middle" fill={hot?GOLD_HI:"#6e6452"}
+        fontFamily="'Share Tech Mono',monospace">{i}</text>
+    </g>);
+    if(i<9){const am=ang((i+0.5)/9)*Math.PI/180;
+      minors.push(<line key={"m"+i} x1={cx+Math.cos(am)*r} y1={cy-Math.sin(am)*r}
+        x2={cx+Math.cos(am)*(r-7)} y2={cy-Math.sin(am)*(r-7)} stroke="#3a3428" strokeWidth="1"/>);}
   }
-  // arc path
-  const pa=(deg)=>{const a=deg*Math.PI/180;return [cx+Math.cos(a)*r, cy-Math.sin(a)*r];};
   const [sx,sy]=pa(a0),[ex,ey]=pa(a1);
-  const [rx,ry]=pa(a0+(a1-a0)*(8/9));
-  const [redEnd,]=pa(a0+(a1-a0)*(8.5/9)); // redline arc ends before tick 9
+  // filled redline wedge from tick 8 → end-stop, between two radii
+  const [r1o,r1oY]=pa(ang(8/9),r), [r2o,r2oY]=pa(ang(1),r);
+  const [r2i,r2iY]=pa(ang(1),r-13), [r1i,r1iY]=pa(ang(8/9),r-13);
+  const redArc=`M ${r1o} ${r1oY} A ${r} ${r} 0 0 1 ${r2o} ${r2oY} L ${r2i} ${r2iY} A ${r-13} ${r-13} 0 0 0 ${r1i} ${r1iY} Z`;
   return(
     <svg viewBox="0 0 300 132" style={{width:"100%",height:"100%",display:"block"}}>
-      <path d={`M ${sx} ${sy} A ${r} ${r} 0 0 1 ${ex} ${ey}`} fill="none" stroke="#2a2520" strokeWidth="2"/>
-      <path d={`M ${rx} ${ry} A ${r} ${r} 0 0 1 ${redEnd} ${pa(a0+(a1-a0)*(8.5/9))[1]}`} fill="none" stroke={GOLD_HI} strokeWidth="2.5" opacity="0.55"/>
-      {ticks}
+      <defs>
+        <radialGradient id="tachFace" cx="50%" cy="62%" r="62%">
+          <stop offset="0%" stopColor="#15130f"/><stop offset="70%" stopColor="#0c0a08"/>
+          <stop offset="100%" stopColor="#070605"/>
+        </radialGradient>
+        <linearGradient id="tachBezel" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#332b1d"/><stop offset="50%" stopColor="#16130d"/>
+          <stop offset="100%" stopColor="#0a0806"/>
+        </linearGradient>
+        <radialGradient id="redGrad" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor="#e6c878"/><stop offset="100%" stopColor="#b53026"/>
+        </radialGradient>
+      </defs>
+      {/* dial face — brushed-dark disc behind the arc */}
+      <path d={`M ${sx} ${sy} A ${r} ${r} 0 0 1 ${ex} ${ey} L ${cx} ${cy} Z`} fill="url(#tachFace)"/>
+      {/* outer bezel ring + inner shadow lip */}
+      <path d={`M ${sx} ${sy} A ${r} ${r} 0 0 1 ${ex} ${ey}`} fill="none" stroke="url(#tachBezel)" strokeWidth="5"/>
+      <path d={`M ${sx} ${sy} A ${r} ${r} 0 0 1 ${ex} ${ey}`} fill="none" stroke="#000" strokeWidth="1.4" strokeOpacity="0.5"
+        style={{filter:"blur(0.6px)"}}/>
+      <path d={redArc} fill="url(#redGrad)" opacity="0.92"/>
+      {minors}{majors}
       <g style={{transformBox:"view-box",transformOrigin:"150px 120px",
-        transform:`rotate(${deg}deg)`,transition:"transform 1.1s cubic-bezier(.4,0,.2,1)"}}>
-        <line x1={cx} y1={cy} x2={cx} y2={cy-(r-18)} stroke={col} strokeWidth="2.5"
-          strokeLinecap="round" opacity="0.85" style={{filter:`drop-shadow(0 0 3px ${col}88)`}}/>
+        transform:`rotate(${deg}deg)`,transition:"transform 1.1s cubic-bezier(.34,1.32,.5,1)"}}>
+        <line x1={cx} y1={cy+14} x2={cx} y2={cy-(r-20)} stroke={col} strokeWidth="2.6"
+          strokeLinecap="round" style={{filter:`drop-shadow(0 0 4px ${col}aa)`}}/>
       </g>
-      <circle cx={cx} cy={cy} r="5.5" fill="#14110c" stroke="#2a2520" strokeWidth="1"/>
+      {/* needle cap — layered hub with specular highlight */}
+      <circle cx={cx} cy={cy} r="8" fill="#0a0806" stroke="#332b1d" strokeWidth="1"/>
+      <circle cx={cx} cy={cy} r="4.5" fill="#1c1812" stroke={col} strokeWidth="1" strokeOpacity="0.5"/>
+      <circle cx={cx-1.4} cy={cy-1.4} r="1.3" fill="#cfc4a8" opacity="0.8"/>
     </svg>
   );
 };
@@ -750,10 +824,11 @@ function Dock({active,onChange,overdueCt,miles,readiness}){
       boxShadow:"inset 0 1px 0 #2a2520, inset 0 14px 30px -14px #000"}}>
 
       {/* Tach + odometer cluster zone */}
-      <div style={{position:"relative",height:120,overflow:"visible"}}>
-        {/* tach arc backdrop */}
-        <div style={{position:"absolute",left:"50%",bottom:-20,transform:"translateX(-50%)",
-          width:380,height:186,opacity:0.9,pointerEvents:"none"}}><Tach deg={needle} col={rdc}/></div>
+      <div style={{position:"relative",height:120,overflow:"hidden"}}>
+        {/* tach arc backdrop — sized and positioned to sit fully inside the cluster,
+            no longer bleeding over the top border of the dock */}
+        <div style={{position:"absolute",left:"50%",bottom:-6,transform:"translateX(-50%)",
+          width:340,height:166,opacity:0.9,pointerEvents:"none"}}><Tach deg={needle} col={rdc}/></div>
 
         {/* odometer centered in the arc */}
         <div style={{position:"absolute",left:0,right:0,bottom:22,display:"flex",
@@ -1356,6 +1431,160 @@ function ElevSilhouette({elevFt,height=60}){
   );
 }
 
+/* ── REGION SCENE ─────────────────────────────────────────
+   A procedurally-drawn landscape header that captures the real
+   *character* of each PA region (river valley, ridge-and-valley,
+   gorge, deep forest) in the app's gold/ink palette. Rendered to
+   a canvas so it's crisp, cohesive, and looks designed — not a
+   stock-photo tile bolted into a template. Deterministic per id,
+   so a given route always draws the same scene.                */
+/* Per-terrain art direction. Each entry sets its own sky (two-stop dawn/dusk
+   gradient), a horizon band color that separates sky from land, and a sun-glow
+   tint. The ridge palettes are deliberately lifted off the ink base so depth
+   reads on a phone — the old set (#1d160c, #15100a, #0e0b07) sat so close to
+   #050505 that the layering was invisible. Farthest ridges are warm/hazy and
+   light; near ridges go cool and dark — classic aerial perspective. */
+const TERRAIN_ART={
+  "river-valley":{ // golden hour on the Susquehanna
+    sky:['#241a10','#3a2a14'], horizon:'rgba(214,150,70,0.55)', glow:'rgba(230,200,110,0.40)',
+    glowY:0.58, ridges:[[0.38,12,3,'#4a3a22'],[0.50,9,3,'#33271a'],[0.60,6,2,'#221a12']] },
+  "ridge-valley":{ // Appalachian parallel ridges receding into haze
+    sky:['#1a1810','#2c2618'], horizon:'rgba(180,150,90,0.42)', glow:'rgba(200,170,100,0.28)',
+    glowY:0.5, ridges:[[0.30,7,2,'#4f4129'],[0.42,8,2,'#3a2f1e'],[0.54,8,2,'#281f14'],[0.66,7,2,'#1a140d']] },
+  "forest-ridge":{
+    sky:['#161a14','#28301f'], horizon:'rgba(150,160,95,0.34)', glow:'rgba(190,180,110,0.24)',
+    glowY:0.5, ridges:[[0.36,10,3,'#42381f'],[0.52,7,3,'#2a2414']] },
+  "deep-forest":{
+    sky:['#121710','#1f2a1a'], horizon:'rgba(120,150,100,0.30)', glow:'rgba(150,180,120,0.20)',
+    glowY:0.46, ridges:[[0.40,6,2,'#34301c']] },
+  "canyon":{ // cool, deep sky reflecting the gorge walls (Pine Creek Gorge)
+    sky:['#101622','#1d2738'], horizon:'rgba(120,150,180,0.30)', glow:'rgba(150,180,210,0.18)',
+    glowY:0.34, ridges:[[0.26,8,3,'#3a3326']] },
+};
+function RegionScene({terrain,seed,height=104}){
+  const ref=useRef(null);
+  useEffect(()=>{
+    const cv=ref.current;if(!cv)return;
+    const DPR=Math.min(window.devicePixelRatio||1,2);
+    const W=cv.clientWidth||320,H=height;
+    cv.width=W*DPR;cv.height=H*DPR;
+    const x=cv.getContext('2d');x.scale(DPR,DPR);
+    let s=0;for(let i=0;i<seed.length;i++)s=(s*31+seed.charCodeAt(i))>>>0;
+    const rnd=()=>{s=(s*1664525+1013904223)>>>0;return s/4294967296;};
+    const art=TERRAIN_ART[terrain]||TERRAIN_ART["ridge-valley"];
+
+    // ── SKY: terrain-specific dawn/dusk gradient ──
+    const sky=x.createLinearGradient(0,0,0,H);
+    sky.addColorStop(0,art.sky[0]);sky.addColorStop(1,art.sky[1]);
+    x.fillStyle=sky;x.fillRect(0,0,W,H);
+    // sun-pool glow, off-center, tinted to the terrain
+    const gx=W*(0.30+rnd()*0.34),gy=H*art.glowY;
+    const glow=x.createRadialGradient(gx,gy,4,gx,gy,H*1.2);
+    glow.addColorStop(0,art.glow);glow.addColorStop(0.55,art.glow.replace(/[\d.]+\)$/,'0.06)'));
+    glow.addColorStop(1,'rgba(0,0,0,0)');x.fillStyle=glow;x.fillRect(0,0,W,H);
+    // warm horizon band — the line that separates sky from terrain
+    const farTop=Math.min(...art.ridges.map(r=>r[0]))*H;
+    const hb=x.createLinearGradient(0,farTop-H*0.22,0,farTop+H*0.10);
+    hb.addColorStop(0,'rgba(0,0,0,0)');hb.addColorStop(0.6,art.horizon);hb.addColorStop(1,'rgba(0,0,0,0)');
+    x.fillStyle=hb;x.fillRect(0,0,W,H);
+
+    // grain ONLY on the sky band, before terrain is drawn — keeps gradients
+    // from posterizing without speckling the silhouettes.
+    {const skyH=Math.floor((farTop+H*0.05));
+     const img=x.getImageData(0,0,W*DPR,Math.max(1,skyH*DPR));const d=img.data;
+     for(let i=0;i<d.length;i+=4){const j=(rnd()*7|0)-3;d[i]+=j;d[i+1]+=j;d[i+2]+=j;}
+     x.putImageData(img,0,0);}
+
+    // ridge band with a 1px lit rim along its crest (light catches the ridgeline)
+    const ridge=(baseY,amp,rough,col,jitter,rim)=>{
+      const ys=[];
+      x.beginPath();x.moveTo(0,H);x.lineTo(0,baseY);
+      for(let px=0;px<=W;px+=6){
+        const n=Math.sin(px*0.012+jitter)+Math.sin(px*0.031+jitter*2)*0.5;
+        const y=baseY+n*amp+(rnd()-0.5)*rough;ys.push([px,y]);x.lineTo(px,y);
+      }
+      x.lineTo(W,H);x.closePath();x.fillStyle=col;x.fill();
+      if(rim){x.beginPath();ys.forEach(([px,y],i)=>i?x.lineTo(px,y):x.moveTo(px,y));
+        x.strokeStyle=rim;x.lineWidth=1;x.stroke();}
+    };
+
+    if(terrain==="canyon"){
+      // far rim catches cool sky light
+      ridge(art.ridges[0][0]*H,art.ridges[0][1],art.ridges[0][2],art.ridges[0][3],1.2,'rgba(150,180,210,0.22)');
+      // converging walls — each gets a vertical gradient (lit top → dark gorge floor)
+      const wallL=x.createLinearGradient(0,0,W*0.4,H);
+      wallL.addColorStop(0,'#2a2a30');wallL.addColorStop(0.5,'#16161c');wallL.addColorStop(1,'#0a0a0d');
+      x.fillStyle=wallL;
+      x.beginPath();x.moveTo(0,H);x.lineTo(0,H*0.16);
+      x.bezierCurveTo(W*0.22,H*0.30,W*0.32,H*0.66,W*0.44,H);x.closePath();x.fill();
+      const wallR=x.createLinearGradient(W,0,W*0.6,H);
+      wallR.addColorStop(0,'#222228');wallR.addColorStop(0.5,'#121217');wallR.addColorStop(1,'#08080b');
+      x.fillStyle=wallR;
+      x.beginPath();x.moveTo(W,H);x.lineTo(W,H*0.12);
+      x.bezierCurveTo(W*0.80,H*0.28,W*0.66,H*0.64,W*0.56,H);x.closePath();x.fill();
+      // lit edges where the walls meet the sky
+      x.beginPath();x.moveTo(0,H*0.16);x.bezierCurveTo(W*0.22,H*0.30,W*0.32,H*0.66,W*0.44,H);
+      x.strokeStyle='rgba(150,180,210,0.30)';x.lineWidth=1.2;x.stroke();
+      x.beginPath();x.moveTo(W,H*0.12);x.bezierCurveTo(W*0.80,H*0.28,W*0.66,H*0.64,W*0.56,H);
+      x.strokeStyle='rgba(150,180,210,0.22)';x.lineWidth=1.2;x.stroke();
+      // river thread on the gorge floor — teal glint with a bright centerline
+      const rg=x.createLinearGradient(0,H*0.88,0,H);
+      rg.addColorStop(0,'rgba(74,154,138,0.0)');rg.addColorStop(1,'rgba(74,154,138,0.55)');
+      x.fillStyle=rg;x.fillRect(W*0.45,H*0.84,W*0.10,H*0.16);
+      x.fillStyle='rgba(150,210,196,0.5)';x.fillRect(W*0.49,H*0.86,W*0.012,H*0.14);
+    } else if(terrain==="river-valley"){
+      const R=art.ridges;
+      ridge(R[0][0]*H,R[0][1],R[0][2],R[0][3],1.1,'rgba(230,200,110,0.30)'); // far ridge, lit crest
+      ridge(R[1][0]*H,R[1][1],R[1][2],R[1][3],2.2,'rgba(180,140,70,0.16)');
+      ridge(R[2][0]*H,R[2][1],R[2][2],R[2][3],3.4,null);
+      // river: soft reflection base, body, then a crisp highlight line on top
+      x.lineCap='round';x.lineJoin='round';
+      const river=()=>{x.beginPath();x.moveTo(-10,H*0.96);
+        x.bezierCurveTo(W*0.3,H*0.86,W*0.4,H*1.02,W*0.66,H*0.9);
+        x.bezierCurveTo(W*0.82,H*0.83,W*0.92,H*0.9,W+10,H*0.84);};
+      river();x.lineWidth=11;x.strokeStyle='rgba(74,154,138,0.20)';x.stroke(); // ambient glow
+      river();x.lineWidth=6;x.strokeStyle='rgba(74,154,138,0.50)';x.stroke();  // body
+      river();x.lineWidth=1.6;x.strokeStyle='rgba(190,235,222,0.7)';x.stroke();// sun highlight
+    } else if(terrain==="ridge-valley"){
+      const rims=['rgba(200,170,100,0.26)','rgba(150,125,75,0.14)',null,null];
+      art.ridges.forEach((r,i)=>ridge(r[0]*H,r[1],r[2],r[3],0.5+i*1.1,rims[i]));
+    } else if(terrain==="forest-ridge"){
+      ridge(art.ridges[0][0]*H,art.ridges[0][1],art.ridges[0][2],art.ridges[0][3],0.8,'rgba(190,180,110,0.18)');
+      ridge(art.ridges[1][0]*H,art.ridges[1][1],art.ridges[1][2],art.ridges[1][3],2.4,null);
+      // ragged tree-line on the near ridge — varied height, two-tone for depth
+      for(let px=0;px<W;px+=3){
+        const th=H*0.64+(rnd()-0.5)*10;
+        x.fillStyle=rnd()>0.5?'#171a12':'#101309';
+        x.fillRect(px,th,2.2,H-th);
+      }
+    } else { // deep-forest — layered conifers with trunks, near rows darker
+      ridge(art.ridges[0][0]*H,art.ridges[0][1],art.ridges[0][2],art.ridges[0][3],1.1,'rgba(150,180,120,0.16)');
+      const conifer=(tx,ty,sc,c)=>{ // tapered fir: three stacked tiers + trunk
+        x.fillStyle=c;
+        for(let tier=0;tier<3;tier++){
+          const ty2=ty+tier*7*sc, w=(8-tier*1.6)*sc;
+          x.beginPath();x.moveTo(tx,ty2);x.lineTo(tx-w,ty2+10*sc);x.lineTo(tx+w,ty2+10*sc);x.closePath();x.fill();
+        }
+        x.fillRect(tx-0.8*sc,ty+24*sc,1.6*sc,4*sc);
+      };
+      // draw far (lighter, higher) to near (darker, lower) for depth stacking
+      const trees=[];for(let i=0;i<34;i++)trees.push([rnd()*W,H*0.48+rnd()*H*0.34,0.55+rnd()*0.95]);
+      trees.sort((a,b)=>a[1]-b[1]);
+      trees.forEach(([tx,ty,sc])=>conifer(tx,ty,sc,ty<H*0.62?'#1a2014':'#0d1108'));
+    }
+
+    // gentle valley haze to seat the layers + UI vignette
+    const haze=x.createLinearGradient(0,H*0.45,0,H);
+    haze.addColorStop(0,'rgba(60,46,22,0.0)');haze.addColorStop(1,'rgba(30,24,12,0.22)');
+    x.fillStyle=haze;x.fillRect(0,0,W,H);
+    const vg=x.createLinearGradient(0,0,0,H);
+    vg.addColorStop(0,'rgba(5,5,5,0.35)');vg.addColorStop(0.28,'rgba(5,5,5,0)');
+    vg.addColorStop(0.82,'rgba(5,5,5,0)');vg.addColorStop(1,'rgba(9,8,7,0.96)');
+    x.fillStyle=vg;x.fillRect(0,0,W,H);
+  },[terrain,seed,height]);
+  return <canvas ref={ref} style={{width:"100%",height,display:"block"}}/>;
+}
+
 // Leaflet map for route cards
 let _lfPromise=null;
 function loadLeaflet(){
@@ -1377,7 +1606,7 @@ function loadLeaflet(){
   });
   return _lfPromise;
 }
-function RouteMap({waypoints,mapId}){
+function RouteMap({waypoints,mapId,roadPath}){
   const ref=useRef(null);
   const [err,setErr]=useState(false);
   useEffect(()=>{
@@ -1393,17 +1622,26 @@ function RouteMap({waypoints,mapId}){
         scrollWheelZoom:false,dragging:false,touchZoom:false,doubleClickZoom:false});
       L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
         {subdomains:"abcd",maxZoom:19}).addTo(map);
-      const coords=[...waypoints,waypoints[0]].map(w=>[w.lat,w.lon]);
-      L.polyline(coords,{color:GOLD,weight:4,opacity:0.85}).addTo(map);
-      L.polyline(coords,{color:GOLD,weight:12,opacity:0.1}).addTo(map);
-      const summit=waypoints.find(w=>w.role==="SUMMIT"||w.role==="START / FINISH");
-      if(summit){
-        const icon=L.divIcon({html:`<div style="width:10px;height:10px;border-radius:50%;background:${TEAL};border:2px solid #060504;box-shadow:0 0 8px ${TEAL}88"></div>`,
-          iconSize:[10,10],iconAnchor:[5,5],className:""});
-        L.marker([waypoints[1]?.lat||summit.lat,waypoints[1]?.lon||summit.lon],{icon}).addTo(map);
-      }
-      const bounds=L.latLngBounds(waypoints.map(w=>[w.lat,w.lon]));
-      map.fitBounds(bounds,{padding:[20,20]});
+      // Prefer real road-snapped geometry (true serpentine shape); fall back to
+      // a closed waypoint loop only when no road path is supplied.
+      const coords=roadPath&&roadPath.length>2
+        ? roadPath
+        : [...waypoints,waypoints[0]].map(w=>[w.lat,w.lon]);
+      L.polyline(coords,{color:GOLD,weight:12,opacity:0.08}).addTo(map);
+      L.polyline(coords,{color:GOLD,weight:3.5,opacity:0.9,lineJoin:"round"}).addTo(map);
+      // waypoint dots
+      waypoints.forEach(w=>{
+        const isStart=w.role&&w.role.includes("START");
+        const isSummit=w.role==="SUMMIT";
+        const c=isStart?TEAL:isSummit?GOLD_HI:CHROME;
+        const sz=isStart||isSummit?9:6;
+        const icon=L.divIcon({html:`<div style="width:${sz}px;height:${sz}px;border-radius:50%;background:${c};border:1.5px solid #060504;box-shadow:0 0 8px ${c}aa"></div>`,
+          iconSize:[sz,sz],iconAnchor:[sz/2,sz/2],className:""});
+        L.marker([w.lat,w.lon],{icon}).addTo(map);
+      });
+      const allPts=(roadPath&&roadPath.length>2?roadPath:waypoints.map(w=>[w.lat,w.lon]));
+      const bounds=L.latLngBounds(allPts);
+      map.fitBounds(bounds,{padding:[18,18]});
     }
     loadLeaflet().then(()=>{if(!cancelled)init();}).catch(()=>setErr(true));
     return()=>{cancelled=true;if(map){try{map.remove();}catch{}}el&&(el._lid=0);};
@@ -1527,44 +1765,96 @@ function RouteCard({route,elevFt,elevIsEst,onLog,isActive,onActivate,onDeactivat
     ?route.rideLog.slice().sort((a,b)=>(rideMs(a)??Infinity)-(rideMs(b)??Infinity))[0]
     :null;
   const gain=elevFt?elevFt.reduce((s,v,i)=>i>0&&v>elevFt[i-1]?s+(v-elevFt[i-1]):s,0):null;
+  const ridesCount=route.rideLog.length;
+  const typeLabel=route.type==="loop"?"LOOP":route.type==="out-back"?"OUT & BACK":"ROUTE";
+
+  // small stat cell
+  const Stat=({val,unit,label,col=BONE})=>(
+    <div style={{display:"flex",flexDirection:"column",gap:1,minWidth:0}}>
+      <div style={{display:"flex",alignItems:"baseline",gap:3}}>
+        <span style={{fontFamily:"'Saira Condensed',sans-serif",fontWeight:700,fontSize:19,color:col,lineHeight:1}}>{val}</span>
+        {unit&&<span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:7.5,color:GOLD_LOW}}>{unit}</span>}
+      </div>
+      <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:7,color:"#5a5448",letterSpacing:1.5}}>{label}</span>
+    </div>
+  );
 
   return(
     <div style={{width:"82vw",maxWidth:320,flexShrink:0,background:"#0c0a07",
       border:`1px solid ${isActive?GOLD:"#1e1c18"}`,display:"flex",flexDirection:"column",
-      transition:"border-color .2s",marginRight:16,scrollSnapAlign:"start"}}>
-      {/* Card header */}
-      <div style={{padding:"12px 14px 8px"}}>
-        <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:GOLD_LOW,letterSpacing:3,marginBottom:3}}>
-          {route.type==="loop"?"LOOP":route.type==="out-back"?"OUT & BACK":"ROUTE"} · {route.region}
+      transition:"border-color .2s",marginRight:16,scrollSnapAlign:"start",
+      boxShadow:isActive?`0 0 0 1px ${GOLD}33, 0 8px 30px -12px #000`:"0 8px 24px -16px #000"}}>
+
+      {/* Region hero — procedural landscape with title overlaid */}
+      <div style={{position:"relative"}}>
+        <RegionScene terrain={route.terrain||"ridge-valley"} seed={route.id} height={104}/>
+        <div style={{position:"absolute",left:0,right:0,bottom:0,padding:"0 14px 9px",pointerEvents:"none"}}>
+          <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:7.5,color:GOLD_HI,
+            letterSpacing:2.5,marginBottom:2,textShadow:"0 1px 4px #000"}}>
+            {typeLabel} · {route.region}
+          </div>
+          <div style={{fontFamily:"'Saira Condensed',sans-serif",fontWeight:800,fontSize:21,
+            color:BONE,lineHeight:1,textShadow:"0 2px 8px #000"}}>{route.name}</div>
         </div>
-        <div style={{fontFamily:"'Saira Condensed',sans-serif",fontWeight:800,fontSize:20,color:BONE,lineHeight:1,marginBottom:8}}>{route.name}</div>
-        <div style={{display:"flex",gap:12}}>
-          <div style={{fontFamily:"'Saira Condensed',sans-serif",fontWeight:700,fontSize:18,color:GOLD}}>{route.miles}<span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:GOLD_LOW,marginLeft:3}}>MI</span></div>
-          {gain!=null&&gain>0&&<div style={{fontFamily:"'Saira Condensed',sans-serif",fontWeight:600,fontSize:14,color:TEAL,alignSelf:"flex-end"}}>+{Math.round(gain/10)*10}<span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:TEAL,marginLeft:2}}>FT{elevIsEst?" EST":""}</span></div>}
-          {best&&<div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:CHROME,alignSelf:"flex-end",marginLeft:"auto"}}>{best.time}<span style={{fontSize:8,color:GOLD_LOW,marginLeft:4}}>BEST</span></div>}
-        </div>
+        {/* top-corner ride count chip */}
+        {ridesCount>0&&<div style={{position:"absolute",top:9,right:10,
+          fontFamily:"'Share Tech Mono',monospace",fontSize:7.5,color:GOLD_HI,letterSpacing:1,
+          background:"#0a0805cc",border:"1px solid #2a2114",padding:"2px 7px",borderRadius:2}}>
+          {ridesCount} {ridesCount===1?"RIDE":"RIDES"}
+        </div>}
       </div>
 
-      {/* Map */}
-      <RouteMap waypoints={route.waypoints} mapId={route.id}/>
+      {/* Stat strip */}
+      <div style={{display:"flex",alignItems:"center",
+        padding:"11px 14px",borderTop:"1px solid #16130e",borderBottom:"1px solid #16130e",
+        background:"linear-gradient(180deg,#0a0906,#0c0a07)"}}>
+        <div style={{flex:1}}><Stat val={route.miles} unit="MI" label="DISTANCE" col={GOLD}/></div>
+        {gain!=null&&gain>0&&<>
+          <div style={{width:1,alignSelf:"stretch",background:LINE,margin:"2px 0"}}/>
+          <div style={{flex:1,paddingLeft:14}}><Stat val={`+${Math.round(gain/10)*10}`} unit={`FT${elevIsEst?"*":""}`} label="CLIMB" col={TEAL}/></div>
+        </>}
+        <div style={{width:1,alignSelf:"stretch",background:LINE,margin:"2px 0"}}/>
+        <div style={{flex:1,paddingLeft:14}}>{best
+          ? <Stat val={best.time.replace(/\s/g,"")} label="BEST TIME" col={GOLD_HI}/>
+          : <Stat val="—" label="NO TIMES" col={MUTE_DIM}/>}</div>
+      </div>
+
+      {/* Map — true road geometry */}
+      <RouteMap waypoints={route.waypoints} mapId={route.id} roadPath={route.roadPath}/>
 
       {/* Elevation silhouette */}
       <div style={{background:"#090807"}}>
-        <ElevSilhouette elevFt={elevFt} height={55}/>
+        <ElevSilhouette elevFt={elevFt} height={48}/>
       </div>
 
       {/* START button */}
       <div style={{padding:"10px 14px 12px"}}>
         <button onClick={()=>isActive?onDeactivate():onActivate()} style={{
-          width:"100%",height:64,background:isActive?BRAKE:GOLD,color:INK,border:"none",
-          fontFamily:"'Share Tech Mono',monospace",fontSize:13,letterSpacing:4,cursor:"pointer",fontWeight:700}}>
-          {isActive?"✕  CLOSE":"▶  START"}
+          width:"100%",height:60,borderRadius:2,
+          background:isActive?`${BRAKE}14`:GOLD,
+          color:isActive?BRAKE:INK,border:isActive?`1px solid ${BRAKE}88`:"none",
+          boxShadow:isActive?`inset 0 0 0 1px ${BRAKE}22`:`inset 0 1px 0 #ffffff22,0 4px 14px -6px #000`,
+          fontFamily:"'Share Tech Mono',monospace",fontSize:12,letterSpacing:4,cursor:"pointer",fontWeight:700}}>
+          {isActive?"✕  CLOSE":"▶  OPEN ROUTE"}
         </button>
       </div>
 
       {/* Expanded: timer + ride log */}
       {isActive&&<div style={{borderTop:`1px solid #1e1c18`,padding:"0 14px 14px"}}>
         <ElevProfile elevFt={elevFt} miles={route.miles}/>
+        {/* waypoint list */}
+        <div style={{marginTop:14}}>
+          <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:GOLD_LOW,letterSpacing:3,marginBottom:8}}>WAYPOINTS</div>
+          {route.waypoints.map((w,i)=>(
+            <div key={i} style={{display:"flex",alignItems:"center",gap:9,padding:"4px 0"}}>
+              <span style={{width:7,height:7,borderRadius:"50%",flexShrink:0,
+                background:w.role&&w.role.includes("START")?TEAL:w.role==="SUMMIT"?GOLD_HI:"#3a3428",
+                boxShadow:w.role?`0 0 6px ${w.role.includes("START")?TEAL:GOLD_HI}88`:"none"}}/>
+              <span style={{fontFamily:"'Saira Semi Condensed',sans-serif",fontSize:13,color:BONE,flex:1}}>{w.name}</span>
+              {w.role&&<span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:7,color:GOLD_LOW,letterSpacing:1}}>{w.role}</span>}
+            </div>
+          ))}
+        </div>
         <div style={{marginTop:16}}>
           <RideTimer running={!!(activeRide&&activeRide.routeId===route.id)}
             startedAt={activeRide?activeRide.t0:0}
@@ -1572,7 +1862,7 @@ function RouteCard({route,elevFt,elevIsEst,onLog,isActive,onActivate,onDeactivat
             onStart={()=>onStartRide(route.id)} onStop={onClearRide}
             onLog={(ms,notes)=>onLog(route.id,ms,notes)}/>
         </div>
-        {route.rideLog.length===0&&<div style={{padding:"12px 14px 4px"}}>
+        {route.rideLog.length===0&&<div style={{padding:"12px 0 4px"}}>
           <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:"#665c4a",letterSpacing:2}}>NO RIDES LOGGED — START A RIDE ABOVE</span>
         </div>}
         {route.rideLog.length>0&&<div style={{marginTop:16,borderTop:"1px solid #141210",paddingTop:12}}>
@@ -1582,16 +1872,23 @@ function RouteCard({route,elevFt,elevIsEst,onLog,isActive,onActivate,onDeactivat
             const mph=ms?route.miles/(ms/3600000):null;
             const isBest=best&&r.ts===best.ts;
             return(
-            <div key={i} style={{display:"flex",justifyContent:"space-between",
-              padding:"6px 0",borderTop:i>0?"1px solid #0e0c0a":"none"}}>
+            <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+              padding:"7px 0 7px 9px",marginLeft:-9,
+              borderTop:i>0?"1px solid #0e0c0a":"none",
+              borderLeft:isBest?`2px solid ${GOLD_HI}`:"2px solid transparent",
+              background:isBest?`linear-gradient(90deg,${GOLD_HI}0f,transparent 60%)`:"none"}}>
               <div>
-                <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:BONE}}>{r.date}
-                  {mph!=null&&isFinite(mph)&&<span style={{color:"#665c4a"}}> · {mph.toFixed(0)} MPH AVG</span>}
+                <div style={{display:"flex",alignItems:"center",gap:7}}>
+                  <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,color:BONE}}>{r.date}</span>
+                  {isBest&&<span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:7,color:INK,
+                    background:GOLD_HI,letterSpacing:1,padding:"1px 5px",borderRadius:2,fontWeight:700}}>PR</span>}
                 </div>
-                {r.notes&&<div style={{fontFamily:"'Saira Semi Condensed',sans-serif",fontSize:11,color:"#665c4a",marginTop:2}}>{r.notes}</div>}
+                {mph!=null&&isFinite(mph)&&<div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,color:MUTE_DIM,marginTop:2}}>{mph.toFixed(0)} MPH AVG</div>}
+                {r.notes&&<div style={{fontFamily:"'Saira Semi Condensed',sans-serif",fontSize:11,color:MUTE_DIM,marginTop:2}}>{r.notes}</div>}
               </div>
-              <div style={{fontFamily:"'Saira Condensed',sans-serif",fontWeight:600,fontSize:16,
-                color:isBest?GOLD:CHROME,flexShrink:0,marginLeft:12}}>{r.time}</div>
+              <div style={{fontFamily:"'Saira Condensed',sans-serif",fontWeight:600,fontSize:17,
+                color:isBest?GOLD_HI:CHROME,flexShrink:0,marginLeft:12,
+                textShadow:isBest?`0 0 10px ${GOLD_HI}44`:"none"}}>{r.time}</div>
             </div>
           );})}
         </div>}
@@ -1879,10 +2176,10 @@ export default function R6Dashboard(){
       return g;
     };
     bx.fillStyle='#050505';bx.fillRect(0,0,BGS,BGS);
-    // cool top wash
+    // cool top wash — kept very subtle so it reads as ambient depth, not a 2nd lamp
     const topG=bx.createLinearGradient(0,0,0,BGS);
     for(let i=0;i<=20;i++){const t=i/20;const e=t*t*(3-2*t);
-      const a=Math.round(140*(1-e));topG.addColorStop(t,`rgba(26,30,40,${(0.5*(1-e)).toFixed(3)})`);}
+      topG.addColorStop(t,`rgba(20,23,30,${(0.22*(1-e)).toFixed(3)})`);}
     bx.fillStyle=topG;bx.fillRect(0,0,BGS,BGS);
     // warm spotlight pool — smooth, generous falloff
     bx.fillStyle=smoothRadial(256,300,8,320,[
@@ -1926,11 +2223,15 @@ export default function R6Dashboard(){
        metals real reflections at negligible cost. */
 
 
-    scene.add(new THREE.AmbientLight(0x1c1c1e,1.3));
-    const key=new THREE.DirectionalLight(0xfff0da,3.1);key.position.set(3,7,5);scene.add(key);
-    const rim=new THREE.DirectionalLight(0x9aa6ba,1.9);rim.position.set(-5,2,-4);scene.add(rim);
-    const under=new THREE.DirectionalLight(0x3a3a3c,0.5);under.position.set(0,-3,2);scene.add(under);
-    const fill2=new THREE.DirectionalLight(0x0c0c0d,0.4);fill2.position.set(3,0,-3);scene.add(fill2);
+    scene.add(new THREE.AmbientLight(0x16161a,1.15));
+    // Single dominant warm key from upper-right — this is the ONE light that reads.
+    const key=new THREE.DirectionalLight(0xfff0da,3.4);key.position.set(3,7,5);scene.add(key);
+    // Rim is now a whisper: just enough to separate the silhouette from the bg,
+    // not bright enough to register as a competing light source. Warmed toward
+    // the key so the two don't read as two distinct color temperatures.
+    const rim=new THREE.DirectionalLight(0x6a6258,0.55);rim.position.set(-5,2,-4);scene.add(rim);
+    // Floor bounce stand-in — extremely soft, lifts the underside without a hotspot.
+    const under=new THREE.DirectionalLight(0x241c12,0.28);under.position.set(0,-3,2);scene.add(under);
 
     const shC=document.createElement('canvas');shC.width=shC.height=256;
     const sx=shC.getContext('2d');
@@ -2216,10 +2517,11 @@ export default function R6Dashboard(){
             style={{height:28,opacity:0.82,display:"block",
               filter:"brightness(0) invert(1) drop-shadow(0 1px 4px rgba(0,0,0,0.85))"}}/></div>
 
-        {/* Decepticon badge */}
-        <div style={{position:"absolute",bottom:182,right:16,zIndex:7,pointerEvents:"none"}}>
+        {/* Decepticon badge — lifted clear of the tach cluster so the needle sweep
+            and redline arc never paint over it */}
+        <div style={{position:"absolute",bottom:236,right:16,zIndex:7,pointerEvents:"none"}}>
           <img alt="" src={"data:image/png;base64,"+DECAL_B64}
-            style={{height:28,opacity:0.45,filter:"drop-shadow(0 0 6px rgba(197,162,75,0.4))"}}/>
+            style={{height:26,opacity:0.4,filter:"drop-shadow(0 0 6px rgba(197,162,75,0.4))"}}/>
         </div>
 
         {/* Date alerts */}
