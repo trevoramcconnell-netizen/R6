@@ -839,15 +839,15 @@ function Dock({active,onChange,overdueCt,miles,readiness}){
   const LcdScreen=({rows})=>(
     <div style={{display:"flex",flexDirection:"column",
       background:"linear-gradient(180deg,#5a0c06,#3a0804)",
-      border:"1px solid #7a1810",borderRadius:4,overflow:"hidden",
-      boxShadow:"inset 0 1px 8px #000a, inset 0 0 16px #ff220018, 0 0 10px #ff220022"}}>
+      border:"1.5px solid #7a1810",borderRadius:5,overflow:"hidden",
+      boxShadow:"inset 0 1px 10px #000a, inset 0 0 20px #ff220018, 0 0 14px #ff220028"}}>
       {rows.map((row,i)=>(
         <div key={i} style={{display:"flex",alignItems:"center",justifyContent:"space-between",
-          gap:8,padding:"4px 7px",
+          gap:10,padding:"7px 11px",
           borderTop:i>0?"1px solid #7a181066":"none"}}>
           <div style={{display:"flex",alignItems:"center"}}>{row.content}</div>
-          <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:6,
-            color:"#ff6655",letterSpacing:1.5,whiteSpace:"nowrap",opacity:0.8}}>{row.label}</span>
+          <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8,
+            color:"#ff6655",letterSpacing:1.5,whiteSpace:"nowrap",opacity:0.85}}>{row.label}</span>
         </div>
       ))}
     </div>
@@ -877,34 +877,37 @@ function Dock({active,onChange,overdueCt,miles,readiness}){
     const gc=svc&&!lit?BRAKE:l.col;
     return(
       <button key={l.id} onClick={()=>{buzz(8);onChange(l.id);}} aria-label={l.label}
-        style={{display:"flex",flexDirection:"column",alignItems:"center",gap:5,
-          background:"none",border:"none",cursor:"pointer",padding:"2px 6px",
+        style={{display:"flex",flexDirection:"column",alignItems:"center",gap:6,
+          background:"none",border:"none",cursor:"pointer",padding:"3px 8px",
           WebkitTapHighlightColor:"transparent"}}>
         {/* recessed housing */}
-        <span style={{position:"relative",width:18,height:18,borderRadius:"50%",
+        <span style={{position:"relative",width:30,height:30,borderRadius:"50%",
           display:"flex",alignItems:"center",justifyContent:"center",
           background:"radial-gradient(circle at 50% 32%, #0a0908, #1c1915 80%)",
-          boxShadow:"inset 0 1.5px 3px #000, inset 0 -1px 1px #2e2820, 0 1px 0 #322b1d",
-          border:"1px solid #14110d"}}>
+          boxShadow:"inset 0 2px 5px #000, inset 0 -1.5px 2px #2e2820, 0 1.5px 0 #322b1d",
+          border:"1.5px solid #14110d"}}>
           {/* domed lens */}
-          <span style={{position:"relative",width:12,height:12,borderRadius:"50%",
+          <span style={{position:"relative",width:21,height:21,borderRadius:"50%",
             background: on
               ? `radial-gradient(circle at 38% 30%, #fff8, ${gc} 42%, ${gc}cc 70%, ${gc}77)`
               : "radial-gradient(circle at 38% 30%, #1c1a16, #0c0b09)",
             boxShadow: on
-              ? `0 0 7px ${gc}, 0 0 14px ${gc}88, inset 0 -1px 2px ${gc}66, inset 0 1px 1px #fff6`
-              : "inset 0 1px 2px #000, inset 0 -1px 1px #221d16",
-            border:`0.5px solid ${on?gc:"#241f18"}`,
+              ? `0 0 12px ${gc}, 0 0 24px ${gc}88, inset 0 -2px 3px ${gc}66, inset 0 1.5px 2px #fff6`
+              : "inset 0 1.5px 3px #000, inset 0 -1px 1px #221d16",
+            border:`1px solid ${on?gc:"#241f18"}`,
             transition:"all .25s",
             animation:svc&&!lit?"pulse 1.8s ease-in-out infinite":""}}>
             {/* specular highlight dot */}
-            {on&&<span style={{position:"absolute",top:1.5,left:2.5,width:3,height:2,
-              borderRadius:"50%",background:"#ffffffcc",filter:"blur(0.4px)"}}/>}
+            {on&&<span style={{position:"absolute",top:3,left:5,width:5,height:3.5,
+              borderRadius:"50%",background:"#ffffffcc",filter:"blur(0.6px)"}}/>}
           </span>
         </span>
-        <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:8.5,letterSpacing:2.5,
-          fontWeight:on?700:400,color:on?l.col:"#6e6452",
-          textShadow:on?`0 0 8px ${l.col}66`:"none",transition:"all .22s"}}>{l.label}</span>
+        {/* white label with black outline (not button color) */}
+        <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:10.5,letterSpacing:2.5,
+          fontWeight:700,color:"#f4f0e6",
+          textShadow:"0 0 3px #000, 1px 1px 0 #000, -1px 1px 0 #000, 1px -1px 0 #000, -1px -1px 0 #000"+
+            (on?`, 0 0 10px ${l.col}aa`:""),
+          transition:"all .22s"}}>{l.label}</span>
       </button>
     );
   };
@@ -916,7 +919,7 @@ function Dock({active,onChange,overdueCt,miles,readiness}){
       {/* Tach — centered, behind the panel content (z23). Anchored so its
           bottom sits at the dock's LCD baseline, bleeding upward into the scene. */}
       <div style={{position:"absolute",bottom:8,left:"50%",transform:"translateX(-50%)",
-        width:"min(248px,72%)",zIndex:23,pointerEvents:"none"}}>
+        width:"min(290px,80%)",zIndex:23,pointerEvents:"none"}}>
         <Tach deg={needle} col={rdc} cropH={157}/>
       </div>
 
@@ -933,7 +936,7 @@ function Dock({active,onChange,overdueCt,miles,readiness}){
 
           {/* LEFT column */}
           <div style={{display:"flex",flexDirection:"column",alignItems:"stretch",gap:6,
-            flexShrink:0,width:132,pointerEvents:"auto"}}>
+            flexShrink:0,width:150,pointerEvents:"auto"}}>
             {/* HOME + FIX lamps */}
             <div style={{display:"flex",justifyContent:"space-around",gap:18,padding:"0 4px"}}>
               {LAMPS.slice(0,2).map(l=>renderLamp(l))}
@@ -942,15 +945,15 @@ function Dock({active,onChange,overdueCt,miles,readiness}){
             <LcdScreen rows={[
               {label:"TIME", content:(
                 <div style={{display:"flex",alignItems:"center"}}>
-                  <Digit d={clockDigits[0]} h={20}/><Digit d={clockDigits[1]} h={20}/>
-                  <Colon h={20}/>
-                  <Digit d={clockDigits[2]} h={20}/><Digit d={clockDigits[3]} h={20}/>
+                  <Digit d={clockDigits[0]} h={24}/><Digit d={clockDigits[1]} h={24}/>
+                  <Colon h={24}/>
+                  <Digit d={clockDigits[2]} h={24}/><Digit d={clockDigits[3]} h={24}/>
                 </div>
               )},
               {label:"% READY", content:(
                 <div style={{display:"flex",alignItems:"center"}}>
-                  {rdStr.split("").map((d,i)=><Digit key={i} d={d} h={24}/>)}
-                  <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:9,
+                  {rdStr.split("").map((d,i)=><Digit key={i} d={d} h={28}/>)}
+                  <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:11,
                     color:"#ff5544",marginLeft:2,alignSelf:"flex-end",marginBottom:1}}>%</span>
                 </div>
               )},
@@ -962,7 +965,7 @@ function Dock({active,onChange,overdueCt,miles,readiness}){
 
           {/* RIGHT column */}
           <div style={{display:"flex",flexDirection:"column",alignItems:"stretch",gap:6,
-            flexShrink:0,width:132,pointerEvents:"auto"}}>
+            flexShrink:0,width:150,pointerEvents:"auto"}}>
             {/* RIDE + SET lamps */}
             <div style={{display:"flex",justifyContent:"space-around",gap:18,padding:"0 4px"}}>
               {LAMPS.slice(2).map(l=>renderLamp(l))}
@@ -972,18 +975,18 @@ function Dock({active,onChange,overdueCt,miles,readiness}){
               <LcdScreen rows={[
                 {label:"°F", content:(
                   tempF==null
-                    ? <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:18,
+                    ? <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:22,
                         color:"#ff3322",fontWeight:900,letterSpacing:1,
                         filter:"drop-shadow(0 0 2px #ff442288)"}}>Lo</span>
                     : <div style={{display:"flex",alignItems:"center"}}>
-                        {String(Math.round(tempF)).split("").map((d,i)=><Digit key={i} d={d} h={20}/>)}
-                        <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:10,
-                          color:"#ff5544",marginLeft:1,alignSelf:"flex-start"}}>°</span>
+                        {String(Math.round(tempF)).split("").map((d,i)=><Digit key={i} d={d} h={24}/>)}
+                        <span style={{fontFamily:"'Share Tech Mono',monospace",fontSize:12,
+                          color:"#ff5544",marginLeft:2,alignSelf:"flex-start"}}>°</span>
                       </div>
                 )},
                 {label:"ODO·MI", content:(
                   <div style={{display:"flex",alignItems:"center"}}>
-                    {odo.split("").map((d,i)=><Digit key={i} d={d} h={24}/>)}
+                    {odo.split("").map((d,i)=><Digit key={i} d={d} h={28}/>)}
                   </div>
                 )},
               ]}/>
