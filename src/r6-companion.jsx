@@ -2689,6 +2689,20 @@ export default function R6Dashboard(){
     return ["OVERDUE","DUE_NOW","COMING_UP"].includes(tier);
   });
 
+  // Crest creep — scale grows 1.0 → 1.5, speed driven by maintenance debt.
+  // readiness 100 = very slow (~2 min to full). readiness 0 = fast (~21s to full).
+  // Resets to 1.0 when user clicks the crest.
+  const [crestScale,setCrestScale]=useState(1.0);
+  useEffect(()=>{
+    const intervalMs=Math.round(3000-((100-readiness)/100)*2500);
+    const step=0.012;
+    const t=setInterval(()=>{
+      if(!infected)setCrestScale(s=>Math.min(1.5,+(s+step).toFixed(4)));
+    },intervalMs);
+    return()=>clearInterval(t);
+  },[readiness,infected]);
+  useEffect(()=>{if(infected)setCrestScale(1.0);},[infected]);
+
   /* ── 3D SCENE — build once ── */
   useEffect(()=>{
     const mount=mountRef.current;
@@ -3052,6 +3066,10 @@ export default function R6Dashboard(){
         @keyframes lcdScan{0%{transform:translateY(-30%);opacity:0}10%{opacity:1}90%{opacity:1}100%{transform:translateY(330%);opacity:0}}
         @keyframes crestSpin{to{transform:rotate(360deg)}}
         @keyframes crestBreath{0%,100%{opacity:0.45;transform:scale(0.9)}50%{opacity:0.85;transform:scale(1.12)}}
+        @keyframes crestIdlePulse{
+          0%,100%{opacity:0.22;filter:drop-shadow(0 0 1px #9a2fff33) brightness(0) invert(1)}
+          50%{opacity:0.45;filter:drop-shadow(0 0 5px #9a2fff88) drop-shadow(0 0 10px #7a2fff44) brightness(0) invert(1)}}
+        @keyframes crestIdleRing{0%,100%{opacity:0.12}50%{opacity:0.35}}
         @keyframes infectBoom{0%{opacity:0;transform:scale(0.2) rotate(-15deg)}
           20%{opacity:1;transform:scale(1.08) rotate(2deg)}
           35%{transform:scale(0.97) rotate(-1deg)}
@@ -3062,8 +3080,19 @@ export default function R6Dashboard(){
           30%{opacity:0.35}100%{transform:scale(1) rotate(0deg);opacity:0.22}}
         @keyframes infectScan{0%{transform:translateY(-4px);opacity:0.9}
           49%{opacity:0.9}50%{opacity:0}51%{opacity:0.8}100%{transform:translateY(100vh);opacity:0.7}}
-        @keyframes infectArc{0%{stroke-dashoffset:200;opacity:0}
-          20%{opacity:1}80%{opacity:0.6}100%{stroke-dashoffset:0;opacity:0}}
+        @keyframes tendrilDraw{
+          0%{stroke-dashoffset:320;opacity:0}
+          15%{opacity:1}
+          85%{opacity:0.7}
+          100%{stroke-dashoffset:0;opacity:0}}
+        @keyframes tendrilFlicker{
+          0%,100%{opacity:0;stroke-width:0.3}
+          10%{opacity:1;stroke-width:1.2}
+          40%{opacity:0.8;stroke-width:0.8}
+          70%{opacity:0.5;stroke-width:0.5}
+          90%{opacity:0.2}}
+        @keyframes sparkPop{
+          0%{r:0;opacity:1}50%{r:3;opacity:0.8}100%{r:6;opacity:0}}
         @keyframes infectShake{
           0%,100%{transform:translateX(0) translateY(0)}
           10%{transform:translateX(-4px) translateY(-2px)}
@@ -3075,7 +3104,6 @@ export default function R6Dashboard(){
           70%{transform:translateX(-1px) translateY(2px)}
           80%{transform:translateX(2px) translateY(-2px)}
           90%{transform:translateX(-1px) translateY(1px)}}
-        @keyframes infectRestore{0%{opacity:1}100%{opacity:0}}
         @keyframes infectText{0%,100%{opacity:0.6}50%{opacity:1}}
         button:active{transform:translateY(1px)}
         @media (prefers-reduced-motion:reduce){*{animation-duration:.01ms !important;transition-duration:.01ms !important}}
@@ -3139,30 +3167,82 @@ export default function R6Dashboard(){
             <rect width="100" height="200" fill="url(#dcGrid2)" opacity="0.4"/>
           </svg>
 
-          {/* ENERGY ARCS — SVG lightning between ring edge and sigil */}
-          <svg viewBox="0 0 100 200" preserveAspectRatio="none" aria-hidden="true"
-            style={{position:"absolute",inset:0,width:"100%",height:"100%",opacity:0.7}}>
-            <defs>
-              <filter id="arcGlow">
-                <feGaussianBlur stdDeviation="0.8" result="blur"/>
-                <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-              </filter>
-            </defs>
-            {/* arcs radiate from crest (top-right ~88%,5%) to sigil (50%,50%) */}
-            {[
-              "M 88 5 Q 70 20 60 50 Q 52 70 50 100",
-              "M 88 5 Q 80 30 55 60 Q 50 80 50 100",
-              "M 88 5 Q 65 15 45 45 Q 42 75 50 100",
-              "M 88 5 Q 75 35 65 65 Q 55 85 50 100",
-            ].map((d,i)=>(
-              <path key={i} d={d} fill="none"
-                stroke={i%2===0?"#9a2fff":"#ff2fff"} strokeWidth="0.5"
-                strokeDasharray="8 4"
-                filter="url(#arcGlow)" opacity="0.85"
-                style={{animation:`infectArc ${1.2+i*0.3}s ease-in-out infinite`,
-                  animationDelay:`${i*0.25}s`}}/>
-            ))}
-          </svg>
+          {/* ENERGON CORRUPTION TENDRILS — radiate outward from the sigil itself.
+              Decepticon lore: Energon is the lifeblood of Cybertronians. When a
+              Decepticon seizes a system, corrupted energon tendrils spread outward
+              from the faction mark and corrupt everything they contact.
+              These are self-contained within the sigil div — no broken DOM bridge. */}
+          <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",
+            justifyContent:"center",pointerEvents:"none"}}>
+            <svg viewBox="-160 -160 320 320" style={{width:320,height:320,position:"absolute",overflow:"visible"}}>
+              <defs>
+                <filter id="tendrilGlow" x="-50%" y="-50%" width="200%" height="200%">
+                  <feGaussianBlur stdDeviation="1.5" result="blur"/>
+                  <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+                </filter>
+                <filter id="tendrilGlow2" x="-100%" y="-100%" width="300%" height="300%">
+                  <feGaussianBlur stdDeviation="3" result="blur"/>
+                  <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+                </filter>
+              </defs>
+
+              {/* PRIMARY TENDRILS — 8 main corruption arms, each unique jagged path.
+                  strokeDasharray total ~320 matches tendrilDraw dashoffset start */}
+              {[
+                // [angle-hint, path-d, color, duration, delay]
+                [0,   "M 0 0 L 4 -28 L -3 -55 L 8 -82 L 2 -118 L -5 -148", "#9a2fff", "1.4s", "0s"],
+                [45,  "M 0 0 L 22 -18 L 48 -28 L 72 -48 L 95 -72 L 112 -100", "#ff2fff", "1.8s", "0.15s"],
+                [90,  "M 0 0 L 28 4 L 55 -2 L 82 8 L 118 2 L 148 -4", "#9a2fff", "1.6s", "0.3s"],
+                [135, "M 0 0 L 20 20 L 42 38 L 68 52 L 92 78 L 108 108", "#c42fff", "2.0s", "0.1s"],
+                [180, "M 0 0 L -4 28 L 3 55 L -8 82 L -2 118 L 5 148", "#ff2fff", "1.5s", "0.4s"],
+                [225, "M 0 0 L -22 18 L -48 28 L -72 48 L -95 72 L -112 100", "#9a2fff", "1.9s", "0.05s"],
+                [270, "M 0 0 L -28 -4 L -55 2 L -82 -8 L -118 -2 L -148 4", "#7a2fff", "1.7s", "0.25s"],
+                [315, "M 0 0 L -20 -20 L -42 -38 L -68 -52 L -92 -78 L -108 -108", "#ff2fff", "2.1s", "0.35s"],
+              ].map(([,d,col,dur,del],i)=>(
+                <g key={i}>
+                  {/* thick glow core */}
+                  <path d={d} fill="none" stroke={col} strokeWidth="2.5"
+                    strokeLinecap="round" strokeLinejoin="round"
+                    strokeDasharray="320" filter="url(#tendrilGlow2)" opacity="0.4"
+                    style={{animation:`tendrilDraw ${dur} ease-out infinite`,animationDelay:del}}/>
+                  {/* sharp bright inner line */}
+                  <path d={d} fill="none" stroke={col} strokeWidth="0.8"
+                    strokeLinecap="round" strokeLinejoin="round"
+                    strokeDasharray="320" filter="url(#tendrilGlow)" opacity="0.95"
+                    style={{animation:`tendrilDraw ${dur} ease-out infinite`,animationDelay:del}}/>
+                </g>
+              ))}
+
+              {/* SECONDARY TENDRILS — thinner, faster flicker, fill the gaps */}
+              {[
+                ["M 0 0 L 12 -15 L 28 -35 L 18 -62 L 35 -88", "#9a2fff", "0.9s", "0.6s"],
+                ["M 0 0 L 15 12 L 38 18 L 58 38 L 82 48", "#ff2fff", "1.1s", "0.8s"],
+                ["M 0 0 L -12 15 L -28 35 L -18 62 L -35 88", "#7a2fff", "1.0s", "0.45s"],
+                ["M 0 0 L -15 -12 L -38 -18 L -58 -38 L -82 -48", "#c42fff", "0.8s", "0.7s"],
+              ].map(([d,col,dur,del],i)=>(
+                <path key={i} d={d} fill="none" stroke={col} strokeWidth="0.5"
+                  strokeLinecap="round" strokeLinejoin="round"
+                  strokeDasharray="160" filter="url(#tendrilGlow)" opacity="0.7"
+                  style={{animation:`tendrilFlicker ${dur} ease-in-out infinite`,animationDelay:del}}/>
+              ))}
+
+              {/* ENERGON SPARKS — small circles that pop at tendril tips */}
+              {[
+                [0,-148,"#ff2fff","1.4s","0.9s"],
+                [112,-100,"#9a2fff","1.8s","1.0s"],
+                [148,-4,"#c42fff","1.6s","1.1s"],
+                [108,108,"#ff2fff","2.0s","0.85s"],
+                [5,148,"#9a2fff","1.5s","1.2s"],
+                [-112,100,"#ff2fff","1.9s","0.95s"],
+                [-148,4,"#7a2fff","1.7s","1.05s"],
+                [-108,-108,"#c42fff","2.1s","0.8s"],
+              ].map(([x,y,col,dur,del],i)=>(
+                <circle key={i} cx={x} cy={y} r="0" fill={col} opacity="0.9"
+                  filter="url(#tendrilGlow)"
+                  style={{animation:`sparkPop ${dur} ease-out infinite`,animationDelay:del}}/>
+              ))}
+            </svg>
+          </div>
 
           {/* GIANT FACTION SIGIL — centered, large, dramatic */}
           <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",
@@ -3267,11 +3347,18 @@ export default function R6Dashboard(){
             </div>
           </div>
 
-          {/* Decepticon crest — single click toggle. Idle: very faint.
+          {/* Decepticon crest — single click toggle.
+              Idle: slow purple pulse on the emblem to invite interaction.
+              Creep: scale grows 1.0→1.5 driven by maintenance debt. Click resets.
               Infected: charged, spinning, radiating. */}
           {(()=>{
             const aura=infected?"#9a2fff":"#2a1a3a";
-            const glowCol=infected?"#9a2fff":"transparent";
+            // Creep-driven visual intensification — glow and opacity scale with crestScale
+            const creepT=(crestScale-1.0)/0.5; // 0 at rest, 1 at full creep
+            const idleOpacityMin=0.22+creepT*0.25;  // 0.22 → 0.47
+            const idleOpacityMax=0.45+creepT*0.35;  // 0.45 → 0.80
+            const glowPx=Math.round(1+creepT*7);    // 1px → 8px shadow at full creep
+            const auraSize=Math.round(36+creepT*16);// 36px → 52px aura blur circle
             return(
               <button
                 onClick={()=>setInfected(v=>!v)}
@@ -3280,42 +3367,61 @@ export default function R6Dashboard(){
                   cursor:"pointer",padding:0,display:"flex",flexDirection:"column",
                   alignItems:"center",gap:3,WebkitTapHighlightColor:"transparent",
                   WebkitUserSelect:"none",userSelect:"none",
-                  animation:infected?"infectShake 0.4s ease 0s 1":"none"}}>
-                <div style={{position:"relative",width:44,height:44,display:"flex",
+                  animation:infected?"infectShake 0.4s ease 0s 1":"none",
+                  // scale the whole button — transform-origin center so it grows toward the header
+                  transform:`scale(${infected?1:crestScale})`,
+                  transformOrigin:"center top",
+                  transition:infected?"none":"transform 1.5s cubic-bezier(0.25,0.46,0.45,0.94)"}}>
+                <div style={{position:"relative",width:60,height:60,display:"flex",
                   alignItems:"center",justifyContent:"center"}}>
-                  {/* outer ring */}
-                  <svg viewBox="0 0 44 44" style={{position:"absolute",inset:0,width:44,height:44}}>
-                    <circle cx="22" cy="22" r="20" fill="none"
-                      stroke={infected?"#9a2fff88":"#2a1a3a"} strokeWidth="1.2"
+                  <svg viewBox="0 0 60 60" style={{position:"absolute",inset:0,width:60,height:60}}>
+                    <circle cx="30" cy="30" r="28" fill="none"
+                      stroke={infected?"#9a2fff88":`rgba(42,26,58,${0.4+creepT*0.5})`} strokeWidth="1.2"
                       style={{transition:"stroke 0.25s",
-                        filter:infected?"drop-shadow(0 0 4px #9a2fff)":"none"}}/>
-                    <circle cx="22" cy="22" r="20" fill="none"
+                        filter:infected
+                          ?"drop-shadow(0 0 5px #9a2fff)"
+                          :creepT>0.3?`drop-shadow(0 0 ${glowPx}px rgba(154,47,255,${creepT*0.6}))`:"none",
+                        animation:infected?undefined:"crestIdleRing 3.5s ease-in-out infinite"}}/>
+                    <circle cx="30" cy="30" r="28" fill="none"
                       stroke={aura} strokeWidth="0.8"
-                      strokeDasharray="3 6" opacity={infected?1:0.3}
-                      style={{transformOrigin:"22px 22px",
-                        animation:infected?"crestSpin 2.5s linear infinite":"none",
+                      strokeDasharray="3 6" opacity={infected?1:0.3+creepT*0.5}
+                      style={{transformOrigin:"30px 30px",
+                        animation:infected?"crestSpin 2.5s linear infinite":creepT>0.6?"crestSpin 12s linear infinite":"none",
                         transition:"opacity 0.25s"}}/>
-                    <circle cx="22" cy="22" r="16"
-                      fill={infected?"#3a0d6633":"transparent"}
-                      stroke={infected?"#7a2fff44":"transparent"} strokeWidth="0.5"
+                    <circle cx="30" cy="30" r="22"
+                      fill={infected?"#3a0d6633":creepT>0.4?`rgba(90,13,154,${creepT*0.18})`:"transparent"}
+                      stroke={infected?"#7a2fff44":creepT>0.4?`rgba(122,47,255,${creepT*0.3})`:"transparent"} strokeWidth="0.5"
                       style={{transition:"all 0.25s"}}/>
                     {[0,90,180,270].map(d=>{const a=d*Math.PI/180;
                       return <line key={d}
-                        x1={22+Math.cos(a)*19} y1={22+Math.sin(a)*19}
-                        x2={22+Math.cos(a)*21} y2={22+Math.sin(a)*21}
-                        stroke={infected?"#9a2fff":"#2a1a3a"} strokeWidth="1.2"
+                        x1={30+Math.cos(a)*26} y1={30+Math.sin(a)*26}
+                        x2={30+Math.cos(a)*29} y2={30+Math.sin(a)*29}
+                        stroke={infected?"#9a2fff":creepT>0.5?"#3a1a5a":"#2a1a3a"} strokeWidth="1.4"
                         style={{transition:"stroke 0.25s"}}/>;})}
                   </svg>
-                  {/* aura glow — visible when infected */}
-                  {infected&&<div style={{position:"absolute",width:30,height:30,borderRadius:"50%",
-                    background:"radial-gradient(circle,#9a2fff66,transparent 70%)",
-                    filter:"blur(3px)",animation:"infectPulse 1.2s ease-in-out infinite"}}/>}
+                  {/* aura glow — grows with creep */}
+                  <div style={{position:"absolute",
+                    width:infected?44:auraSize,height:infected?44:auraSize,
+                    borderRadius:"50%",
+                    background:infected
+                      ?"radial-gradient(circle,#9a2fff66,transparent 70%)"
+                      :`radial-gradient(circle,rgba(154,47,255,${0.06+creepT*0.18}),transparent 70%)`,
+                    filter:"blur(4px)",
+                    animation:infected
+                      ?"infectPulse 1.2s ease-in-out infinite"
+                      :"infectPulse 3.8s ease-in-out infinite",
+                    transition:"width 1.5s,height 1.5s,background 1.5s"}}/>
+                  {/* emblem — creep makes idle glow stronger and opacity higher */}
                   <img alt="" src={"data:image/png;base64,"+DECAL_B64}
-                    style={{height:18,position:"relative",zIndex:1,
-                      opacity:infected?1:0.25,transition:"opacity 0.25s, filter 0.25s",
+                    style={{height:26,position:"relative",zIndex:1,
+                      transition:"filter 1.5s",
+                      animation:infected?undefined:"crestIdlePulse 3.8s ease-in-out infinite",
+                      opacity:infected?1:undefined,
                       filter:infected
                         ?"brightness(0) invert(1) drop-shadow(0 0 8px #9a2fff) drop-shadow(0 0 16px #7a2fff) drop-shadow(0 0 4px #ff2fff)"
-                        :"brightness(0) invert(1)"}}/>
+                        :creepT>0.15
+                          ?`brightness(0) invert(1) drop-shadow(0 0 ${glowPx*1.5}px rgba(154,47,255,${0.3+creepT*0.55}))`
+                          :undefined}}/>
                 </div>
               </button>
             );
